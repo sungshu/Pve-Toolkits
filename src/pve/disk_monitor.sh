@@ -566,6 +566,14 @@ cat > "$CONTENT_CPU_JS" <<'JS'
     renderer: function(value){
         if (!value || value === 'No sensor data') return '無感測器資料';
 
+        function colorizeTemp(temp) {
+            let n = Number(temp);
+            if (Number.isNaN(n)) return temp + '°C';
+            if (n < 60) return '<span style="color: #27ae60; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+            if (n < 80) return '<span style="color: #f39c12; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+            return '<span style="color: #e74c3c; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+        }
+
         let cpuList = [];
         let otherList = [];
         let nicCount = 0;
@@ -575,16 +583,12 @@ cat > "$CONTENT_CPU_JS" <<'JS'
             let lines = block.split('\n');
             let chip = (lines[0] || '').trim();
 
-            if (/nvme/i.test(chip)) {
-                return;
-            }
+            if (/nvme/i.test(chip)) return;
 
             if (/coretemp|k10temp|zenpower/i.test(chip)) {
                 let pkgTemp = '';
                 let pkgMatch = block.match(/(?:Package id \d+|Tctl|Tdie):\s*([+-]?\d+(?:\.\d+)?)\s*°C/i);
-                if (pkgMatch) {
-                    pkgTemp = Math.round(Number(pkgMatch[1]));
-                }
+                if (pkgMatch) pkgTemp = Math.round(Number(pkgMatch[1]));
 
                 let coreTemps = [];
                 let coreRegex = /(?:Core \d+|Tccd\d+):\s*([+-]?\d+(?:\.\d+)?)\s*°C/ig;
@@ -593,17 +597,19 @@ cat > "$CONTENT_CPU_JS" <<'JS'
                     coreTemps.push(Math.round(Number(cMatch[1])));
                 }
 
-                let str = '';
-                if (pkgTemp !== '' && coreTemps.length > 0) {
-                    str = pkgTemp + ' (' + coreTemps.join(' | ') + ' )°C';
-                } else if (pkgTemp !== '') {
-                    str = pkgTemp + '°C';
-                } else if (coreTemps.length > 0) {
-                    str = '(' + coreTemps.join(' | ') + ' )°C';
-                }
+                if (pkgTemp !== '' || coreTemps.length > 0) {
+                    let avgCore = '';
+                    let minCore = '';
+                    let maxCore = '';
 
-                if (str) {
-                    cpuList.push(str);
+                    if (coreTemps.length > 0) {
+                        let total = coreTemps.reduce(function(a,b){ return a+b; }, 0);
+                        avgCore = Math.round(total / coreTemps.length);
+                        minCore = Math.min.apply(null, coreTemps);
+                        maxCore = Math.max.apply(null, coreTemps);
+                    }
+
+                    cpuList.push({packageTemp:pkgTemp, avgCore:avgCore, minCore:minCore, maxCore:maxCore});
                 }
             } else {
                 let devName = chip.split('-')[0].toUpperCase();
@@ -614,9 +620,7 @@ cat > "$CONTENT_CPU_JS" <<'JS'
                         nicCount++;
                         devName = '網卡' + nicCount;
                     }
-
-                    let tempVal = Math.round(Number(devMatch[1])) + '°C';
-                    otherList.push(devName + ': ' + tempVal);
+                    otherList.push(devName + ': ' + colorizeTemp(Math.round(Number(devMatch[1]))));
                 }
             }
         });
@@ -627,22 +631,34 @@ cat > "$CONTENT_CPU_JS" <<'JS'
             let numCpus = cpuList.length;
             let rows = [];
 
-            for (let i = 0; i < numCpus; i++) {
-                rows.push(['CPU' + (i + 1) + ': ' + cpuList[i]]);
+            for (let i=0; i<numCpus; i++) {
+                let cpu = cpuList[i];
+                let text = 'CPU' + (i+1) + ':';
+
+                if (cpu.packageTemp !== '') {
+                    text += ' 封裝: ' + colorizeTemp(cpu.packageTemp);
+                }
+
+                if (cpu.avgCore !== '') {
+                    text += ' | 核心: 平均 ' + colorizeTemp(cpu.avgCore) +
+                        ' (' + colorizeTemp(cpu.minCore) + '~' + colorizeTemp(cpu.maxCore) + ')';
+                }
+
+                rows.push([text]);
             }
 
-            for (let j = 0; j < otherList.length; j++) {
-                let targetRow = (j < numCpus) ? j : (numCpus - 1);
+            for (let j=0; j<otherList.length; j++) {
+                let targetRow = (j<numCpus) ? j : (numCpus-1);
                 rows[targetRow].push(otherList[j]);
             }
 
-            rows.forEach(function(r){
-                linesOut.push(r.join(' | '));
-            });
+            rows.forEach(function(r){ linesOut.push(r.join(' | ')); });
         } else {
             let matches = value.match(/[+-]?\d+(?:\.\d+)?\s*°C/g);
             if (matches && matches.length) {
-                linesOut.push('感測器: ' + matches.join(' | '));
+                linesOut.push('感測器: ' + matches.map(function(t){
+                    return colorizeTemp(parseFloat(t));
+                }).join(' | '));
             } else {
                 linesOut.push('正常');
             }
@@ -650,6 +666,7 @@ cat > "$CONTENT_CPU_JS" <<'JS'
 
         return linesOut.join('<br>');
     }
+
 },
 JS
 
