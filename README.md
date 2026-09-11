@@ -186,26 +186,26 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 
 ```text
 Pve-Toolkits/
-├── README.md
-├── LICENSE
-├── 00.PVE系統初始化與優化.md
-├── 01.PVE硬體監控客製化.md
+├── img/
+│   ├── p00/
+│   └── p01/
 │
 ├── src/
 │   └── pve/
 │       ├── pve_init.sh
 │       └── disk_monitor.sh
 │
-└── img/
-    ├── p00/
-    └── p01/
+├── 00.PVE系統初始化與優化.md
+├── 01.PVE硬體監控客製化.md
+├── LICENSE
+└── README.md
 ```
 
+- `img/p00/`：00 文件與專案流程圖
+- `img/p01/`：01 文件使用的圖片
 - `src/pve/`：正式使用的 PVE Shell 工具
 - `00.PVE系統初始化與優化.md`：初始化與系統優化文件
 - `01.PVE硬體監控客製化.md`：硬體監控與 PVE Web UI 客製化文件
-- `img/p00/`：00 文件與專案流程圖
-- `img/p01/`：01 文件使用的圖片
 
 ---
 
