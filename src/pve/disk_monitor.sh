@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="1.0.52"
-UPDATED="2026-09-01"
+VERSION="1.0.53"
+UPDATED="2026-09-11"
 SCRIPT_PATH="$(readlink -f "$0")"
 
 BASE_DIR="/run/disk_monitor.$$"
@@ -471,7 +471,7 @@ collect_metrics false
 # Backend: Nodes.pm
 # =========================================================
 cat > "$CONTENT_NP" <<'PERL'
-# disk_monitor_1.0.52
+# disk_monitor_1.0.53
 
 my $dm_read = sub {
     my ($file) = @_;
@@ -521,7 +521,7 @@ done < <(jq -r '.[].physical_disk' "$RAID_JSON")
 # Frontend: 區塊 1 - CPU 狀態與溫度
 # =========================================================
 cat > "$CONTENT_CPU_JS" <<'JS'
-// disk_monitor_1.0.52_cpu
+// disk_monitor_1.0.53_cpu
 
 {
     itemId: 'dm_cpumhz',
@@ -566,15 +566,15 @@ cat > "$CONTENT_CPU_JS" <<'JS'
     renderer: function(value){
         if (!value || value === 'No sensor data') return '無感測器資料';
 
-        function colorizeTemp(temp) {
-            let n = Number(temp);
-            if (Number.isNaN(n)) return temp + '°C';
-            if (n < 60) return '<span style="color: #27ae60; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
-            if (n < 80) return '<span style="color: #f39c12; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
-            return '<span style="color: #e74c3c; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+        function colorizeCpuTemp(temp) {
+            const tempNum = parseFloat(temp);
+            if (Number.isNaN(tempNum)) return temp + '°C';
+            if (tempNum < 60) return '<span style="color: #27ae60; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+            if (tempNum < 80) return '<span style="color: #f39c12; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+            return '<span style="color: #e74c3c; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
         }
 
-        let cpuList = [];
+        let cpuResults = [];
         let otherList = [];
         let nicCount = 0;
         let blocks = value.trim().split(/\n\s*\n/);
@@ -585,31 +585,28 @@ cat > "$CONTENT_CPU_JS" <<'JS'
 
             if (/nvme/i.test(chip)) return;
 
-            if (/coretemp|k10temp|zenpower/i.test(chip)) {
-                let pkgTemp = '';
-                let pkgMatch = block.match(/(?:Package id \d+|Tctl|Tdie):\s*([+-]?\d+(?:\.\d+)?)\s*°C/i);
-                if (pkgMatch) pkgTemp = Math.round(Number(pkgMatch[1]));
-
-                let coreTemps = [];
-                let coreRegex = /(?:Core \d+|Tccd\d+):\s*([+-]?\d+(?:\.\d+)?)\s*°C/ig;
-                let cMatch;
-                while ((cMatch = coreRegex.exec(block)) !== null) {
-                    coreTemps.push(Math.round(Number(cMatch[1])));
+            if (/coretemp|k10temp|zenpower|zenpower3|k8temp|fam15h|zenprobe/i.test(chip)) {
+                let temps = [];
+                let tempRegex = /(?:Package id \d+|Tctl|Tdie|Core \d+|Tccd\d+):\s*\+?(-?\d+(?:\.\d+)?)\s*°C/ig;
+                let tMatch;
+                while ((tMatch = tempRegex.exec(block)) !== null) {
+                    temps.push(Number(tMatch[1]));
                 }
 
-                if (pkgTemp !== '' || coreTemps.length > 0) {
-                    let avgCore = '';
-                    let minCore = '';
-                    let maxCore = '';
+                if (temps.length > 0) {
+                    let packageTemp = temps[0];
+                    let coreTemps = temps.slice(1);
+                    let detail = '封裝: ' + colorizeCpuTemp(packageTemp);
 
                     if (coreTemps.length > 0) {
-                        let total = coreTemps.reduce(function(a,b){ return a+b; }, 0);
-                        avgCore = Math.round(total / coreTemps.length);
-                        minCore = Math.min.apply(null, coreTemps);
-                        maxCore = Math.max.apply(null, coreTemps);
+                        let avgCore = coreTemps.reduce(function(a,b){ return a + b; }, 0) / coreTemps.length;
+                        let maxCore = Math.max.apply(null, coreTemps);
+                        let minCore = Math.min.apply(null, coreTemps);
+                        detail += ' | 核心: 平均 ' + colorizeCpuTemp(avgCore) +
+                            ' (' + colorizeCpuTemp(minCore) + '~' + colorizeCpuTemp(maxCore) + ')';
                     }
 
-                    cpuList.push({packageTemp:pkgTemp, avgCore:avgCore, minCore:minCore, maxCore:maxCore});
+                    cpuResults.push(detail);
                 }
             } else {
                 let devName = chip.split('-')[0].toUpperCase();
@@ -620,45 +617,27 @@ cat > "$CONTENT_CPU_JS" <<'JS'
                         nicCount++;
                         devName = '網卡' + nicCount;
                     }
-                    otherList.push(devName + ': ' + colorizeTemp(Math.round(Number(devMatch[1]))));
+                    otherList.push(devName + ': ' + colorizeCpuTemp(Number(devMatch[1])));
                 }
             }
         });
 
         let linesOut = [];
 
-        if (cpuList.length > 0) {
-            let numCpus = cpuList.length;
-            let rows = [];
+        if (cpuResults.length > 0) {
+            cpuResults.forEach(function(temp, idx){
+                let line = 'CPU' + idx + ': ' + temp;
+                if (otherList[idx]) line += ' | ' + otherList[idx];
+                linesOut.push(line);
+            });
 
-            for (let i=0; i<numCpus; i++) {
-                let cpu = cpuList[i];
-                let text = 'CPU' + (i+1) + ':';
-
-                if (cpu.packageTemp !== '') {
-                    text += ' 封裝: ' + colorizeTemp(cpu.packageTemp);
-                }
-
-                if (cpu.avgCore !== '') {
-                    text += ' | 核心: 平均 ' + colorizeTemp(cpu.avgCore) +
-                        ' (' + colorizeTemp(cpu.minCore) + '~' + colorizeTemp(cpu.maxCore) + ')';
-                }
-
-                rows.push([text]);
+            for (let j = cpuResults.length; j < otherList.length; j++) {
+                linesOut.push(otherList[j]);
             }
-
-            for (let j=0; j<otherList.length; j++) {
-                let targetRow = (j<numCpus) ? j : (numCpus-1);
-                rows[targetRow].push(otherList[j]);
-            }
-
-            rows.forEach(function(r){ linesOut.push(r.join(' | ')); });
         } else {
             let matches = value.match(/[+-]?\d+(?:\.\d+)?\s*°C/g);
             if (matches && matches.length) {
-                linesOut.push('感測器: ' + matches.map(function(t){
-                    return colorizeTemp(parseFloat(t));
-                }).join(' | '));
+                linesOut.push('感測器: ' + matches.map(function(x){ return colorizeCpuTemp(parseFloat(x)); }).join(' | '));
             } else {
                 linesOut.push('正常');
             }
@@ -666,7 +645,6 @@ cat > "$CONTENT_CPU_JS" <<'JS'
 
         return linesOut.join('<br>');
     }
-
 },
 JS
 
@@ -674,14 +652,34 @@ JS
 # Frontend: 區塊 2 - 磁碟列表
 # =========================================================
 cat > "$CONTENT_DISK_JS" <<'JS'
-// disk_monitor_1.0.52_disk
+// disk_monitor_1.0.53_disk
 JS
+cat > "$BASE_DIR/temp_helpers.js" <<'JS'
+function colorizeNvmeTemp(temp) {
+    const tempNum = parseFloat(temp);
+    if (Number.isNaN(tempNum)) return temp + '°C';
+    if (tempNum < 50) return '<span style="color: #27ae60; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+    if (tempNum < 70) return '<span style="color: #f39c12; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+    return '<span style="color: #e74c3c; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+}
+
+function colorizeDiskTemp(temp) {
+    const tempNum = parseFloat(temp);
+    if (Number.isNaN(tempNum)) return temp + '°C';
+    if (tempNum < 40) return '<span style="color: #27ae60; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+    if (tempNum < 50) return '<span style="color: #f39c12; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+    return '<span style="color: #e74c3c; font-weight: 600;">' + tempNum.toFixed(0) + '°C</span>';
+}
+JS
+
 
 nvi_js=0
 for dev in /dev/nvme*n1; do
     [[ -b "$dev" ]] || continue
 
-    cat >> "$CONTENT_DISK_JS" <<JS
+    cat "$BASE_DIR/temp_helpers.js" >> "$CONTENT_DISK_JS"
+
+cat >> "$CONTENT_DISK_JS" <<JS
 {
     itemId: 'nvme${nvi_js}0',
     colspan: 2,
@@ -694,7 +692,7 @@ for dev in /dev/nvme*n1; do
             let s = v.model_name || v.model_family || '未知型號';
 
             if (v.temperature && v.temperature.current !== undefined)
-                s += ' | 溫度: ' + v.temperature.current + '°C';
+                s += ' | 溫度: ' + colorizeNvmeTemp(v.temperature.current);
 
             if (v.nvme_smart_health_information_log &&
                 v.nvme_smart_health_information_log.percentage_used !== undefined)
@@ -784,11 +782,10 @@ while IFS= read -r pd; do
             let s = v.model_name || v.model_family || v.product || '未知型號';
 
             if (v.temperature && v.temperature.current !== undefined) {
-                s += ' | 溫度: ' + v.temperature.current + '°C';
+                s += ' | 溫度: ' + colorizeDiskTemp(v.temperature.current);
             } else if (v.temperature &&
                 v.temperature.drive_temperature !== undefined) {
-                s += ' | 溫度: ' +
-                    v.temperature.drive_temperature + '°C';
+                s += ' | 溫度: ' + colorizeDiskTemp(v.temperature.drive_temperature);
             }
 
             if (v.power_on_time &&
@@ -854,7 +851,7 @@ for dev in /dev/sd?; do
             let s = v.model_name || v.model_family || '未知型號';
 
             if (v.temperature && v.temperature.current !== undefined)
-                s += ' | 溫度: ' + v.temperature.current + '°C';
+                s += ' | 溫度: ' + colorizeDiskTemp(v.temperature.current);
 
             if (v.power_on_time &&
                 v.power_on_time.hours !== undefined)
@@ -974,7 +971,7 @@ log "Node Summary 高度已成功交由前端引擎自動適應 (auto)。"
 # =========================================================
 # Subscription popup
 # =========================================================
-if ! grep -q 'disk_monitor_1.0.52_subscription' "$PLIBJS"; then
+if ! grep -q 'disk_monitor_1.0.53_subscription' "$PLIBJS"; then
     if grep -q '/nodes/localhost/subscription' "$PLIBJS"; then
         if ! sed -E -i '
             /\/nodes\/localhost\/subscription/,+15{
@@ -983,7 +980,7 @@ if ! grep -q 'disk_monitor_1.0.52_subscription' "$PLIBJS"; then
                     /Ext\.Msg\.show/!d
                     x
                     s/(.* if \().*(\).*)/\1false\2/
-                    i\//disk_monitor_1.0.52_subscription
+                    i\//disk_monitor_1.0.53_subscription
                 }
             }
         ' "$PLIBJS"
@@ -1012,13 +1009,13 @@ if grep -nE 'smartctl|sensors|turbostat' "$CONTENT_NP" >/dev/null 2>&1; then
     die "注入內容包含禁止的硬體 command"
 fi
 
-grep -q 'disk_monitor_1.0.52' "$NP" || {
+grep -q 'disk_monitor_1.0.53' "$NP" || {
     restore
     systemctl restart pveproxy 2>/dev/null || true
     die "Nodes.pm 注入標記不存在"
 }
 
-grep -q 'disk_monitor_1.0.52_cpu' "$PVEJS" || {
+grep -q 'disk_monitor_1.0.53_cpu' "$PVEJS" || {
     restore
     systemctl restart pveproxy 2>/dev/null || true
     die "pvemanagerlib.js CPU 注入標記不存在"
