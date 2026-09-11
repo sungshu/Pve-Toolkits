@@ -141,7 +141,7 @@ cpu = r'''cat > "$CONTENT_CPU_JS" <<'JS'
 JS
 '''
 pat = r'cat > "\$CONTENT_CPU_JS" <<\x27JS\x27\n.*?^JS\n'
-s2, n = re.subn(pat, cpu, s, count=1, flags=re.M|re.S)
+s2, n = re.subn(pat, lambda m: cpu, s, count=1, flags=re.M|re.S)
 if n != 1:
     raise SystemExit('CPU block not found')
 s = s2
