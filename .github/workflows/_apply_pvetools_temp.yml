@@ -22,3 +22,4 @@ jobs:
           git diff --cached --quiet && exit 0 || true
           git commit -m 'feat: align temperature display with PVE Tools Pro'
           git push
+# rerun after helper fix
