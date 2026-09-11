@@ -1,0 +1,120 @@
+from pathlib import Path
+
+p = Path('src/pve/disk_monitor.sh')
+s = p.read_text(encoding='utf-8')
+start = "    itemId: 'dm_thermalstate',"
+end = "\n},\nJS"
+a = s.index(start)
+b = s.index(end, a)
+
+new_block = r'''    itemId: 'dm_thermalstate',
+    colspan: 2,
+    printBar: false,
+    title: gettext('CPU溫度 (°C)'),
+    textField: 'thermalstate',
+    renderer: function(value){
+        if (!value || value === 'No sensor data') return '無感測器資料';
+
+        function colorizeTemp(temp) {
+            let n = Number(temp);
+            if (Number.isNaN(n)) return temp + '°C';
+            if (n < 60) return '<span style="color: #27ae60; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+            if (n < 80) return '<span style="color: #f39c12; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+            return '<span style="color: #e74c3c; font-weight: 600;">' + n.toFixed(0) + '°C</span>';
+        }
+
+        let cpuList = [];
+        let otherList = [];
+        let nicCount = 0;
+        let blocks = value.trim().split(/\n\s*\n/);
+
+        blocks.forEach(function(block){
+            let lines = block.split('\n');
+            let chip = (lines[0] || '').trim();
+
+            if (/nvme/i.test(chip)) return;
+
+            if (/coretemp|k10temp|zenpower/i.test(chip)) {
+                let pkgTemp = '';
+                let pkgMatch = block.match(/(?:Package id \d+|Tctl|Tdie):\s*([+-]?\d+(?:\.\d+)?)\s*°C/i);
+                if (pkgMatch) pkgTemp = Math.round(Number(pkgMatch[1]));
+
+                let coreTemps = [];
+                let coreRegex = /(?:Core \d+|Tccd\d+):\s*([+-]?\d+(?:\.\d+)?)\s*°C/ig;
+                let cMatch;
+                while ((cMatch = coreRegex.exec(block)) !== null) {
+                    coreTemps.push(Math.round(Number(cMatch[1])));
+                }
+
+                if (pkgTemp !== '' || coreTemps.length > 0) {
+                    let avgCore = '';
+                    let minCore = '';
+                    let maxCore = '';
+
+                    if (coreTemps.length > 0) {
+                        let total = coreTemps.reduce(function(a,b){ return a+b; }, 0);
+                        avgCore = Math.round(total / coreTemps.length);
+                        minCore = Math.min.apply(null, coreTemps);
+                        maxCore = Math.max.apply(null, coreTemps);
+                    }
+
+                    cpuList.push({packageTemp:pkgTemp, avgCore:avgCore, minCore:minCore, maxCore:maxCore});
+                }
+            } else {
+                let devName = chip.split('-')[0].toUpperCase();
+                let devMatch = block.match(/(?:temp1|Composite|Board|Sensor \d+):\s*([+-]?\d+(?:\.\d+)?)\s*°C/i);
+
+                if (devMatch) {
+                    if (/BNXT|TG3|E1000|IXGBE|I40E|ICE|MLX/i.test(devName)) {
+                        nicCount++;
+                        devName = '網卡' + nicCount;
+                    }
+                    otherList.push(devName + ': ' + colorizeTemp(Math.round(Number(devMatch[1]))));
+                }
+            }
+        });
+
+        let linesOut = [];
+
+        if (cpuList.length > 0) {
+            let numCpus = cpuList.length;
+            let rows = [];
+
+            for (let i=0; i<numCpus; i++) {
+                let cpu = cpuList[i];
+                let text = 'CPU' + (i+1) + ':';
+
+                if (cpu.packageTemp !== '') {
+                    text += ' 封裝: ' + colorizeTemp(cpu.packageTemp);
+                }
+
+                if (cpu.avgCore !== '') {
+                    text += ' | 核心: 平均 ' + colorizeTemp(cpu.avgCore) +
+                        ' (' + colorizeTemp(cpu.minCore) + '~' + colorizeTemp(cpu.maxCore) + ')';
+                }
+
+                rows.push([text]);
+            }
+
+            for (let j=0; j<otherList.length; j++) {
+                let targetRow = (j<numCpus) ? j : (numCpus-1);
+                rows[targetRow].push(otherList[j]);
+            }
+
+            rows.forEach(function(r){ linesOut.push(r.join(' | ')); });
+        } else {
+            let matches = value.match(/[+-]?\d+(?:\.\d+)?\s*°C/g);
+            if (matches && matches.length) {
+                linesOut.push('感測器: ' + matches.map(function(t){
+                    return colorizeTemp(parseFloat(t));
+                }).join(' | '));
+            } else {
+                linesOut.push('正常');
+            }
+        }
+
+        return linesOut.join('<br>');
+    }
+'''
+
+p.write_text(s[:a] + new_block + s[b:], encoding='utf-8')
