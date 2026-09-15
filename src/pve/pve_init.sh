@@ -331,7 +331,9 @@ if [[ "$actual_version" == "$DOWNLOAD_VERSION" ]]; then
     echo "  ${C_GREEN}${C_BOLD}✓ 版本相同，自動執行 v${DOWNLOAD_VERSION}${C_RESET}"
     for ((count=60; count>=1; count--)); do
         printf "\r  ${C_CYAN}→${C_RESET} 將於 %2d 秒後執行 disk_monitor.sh v${DOWNLOAD_VERSION}..." "$count"
-        sleep 1
+        if IFS= read -r -t 1; then
+            break
+        fi
     done
     printf '\r%*s\r' 90 ''
     info_item "Execute" "開始執行 v${DOWNLOAD_VERSION}..."
