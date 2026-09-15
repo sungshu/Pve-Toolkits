@@ -335,11 +335,10 @@ if [[ "$actual_version" == "$DOWNLOAD_VERSION" ]]; then
     done
     printf '\r%*s\r' 90 ''
     info_item "Execute" "開始執行 v${DOWNLOAD_VERSION}..."
-    if "$disk_script" install >/tmp/pve_toolkit_step.$$ 2>&1; then
+    if "$disk_script" install; then
         ok_item "disk_monitor.sh" "v${DOWNLOAD_VERSION} 執行完成"
     else
         fail_item "disk_monitor.sh" "v${DOWNLOAD_VERSION} 執行失敗"
-        echo "    ${C_RED}錯誤：$(tail -n 5 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
         rm -f "$latest_tmp" /tmp/pve_toolkit_step.$$
         exit 1
     fi
@@ -354,11 +353,10 @@ else
             chmod 0755 "$disk_script"
             ok_item "Execute Decision" "使用者選擇執行 v${actual_version}"
             info_item "Execute" "開始執行 v${actual_version}..."
-            if "$disk_script" install >/tmp/pve_toolkit_step.$$ 2>&1; then
+            if "$disk_script" install; then
                 ok_item "disk_monitor.sh" "v${actual_version} 執行完成"
             else
                 fail_item "disk_monitor.sh" "v${actual_version} 執行失敗"
-                echo "    ${C_RED}錯誤：$(tail -n 5 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
                 rm -f "$latest_tmp" /tmp/pve_toolkit_step.$$
                 exit 1
             fi
