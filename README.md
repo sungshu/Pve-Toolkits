@@ -5,7 +5,7 @@
 ![PVE Toolkit 自動化管理流程](img/p00/PVE-Toolkit_自動化管理流程.jpg)
 
 > **🇹🇼 TW 繁體中文版**  
-> **目前版本：PVE Toolkit 2.1.8**  
+> **目前版本：PVE Toolkit 2.1.9 / disk_monitor.sh 1.3.6-Pro**  
 > **適用環境：Proxmox VE 9.x / Debian 13 Trixie**
 
 PVE Toolkit 是針對 Proxmox VE 主機日常建置與維護所整理的 Shell 工具與實戰文件。
@@ -70,7 +70,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/sr
 - PVE Subscription Nag Hook
 - 必要系統與硬體監控套件
 - Datacenter Tag 樣式
-- 自動部署 `disk_monitor.sh v1.0.52`
+- 自動部署 `disk_monitor.sh v1.3.6-Pro`
+- 版本相同時倒數 **30 秒**自動執行，按 **Enter** 可立即執行
 
 ### 只需要硬體監控
 
@@ -153,12 +154,14 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 
 ### PVE 硬體監控與 Web UI 客製化
 
-- CPU 資訊與雙插槽溫度
+- CPU 資訊與多插槽溫度
+- CPU 頻率、Package Power 與感測器資訊
 - NVMe 健康資訊與使用量
 - SATA / SAS 硬碟資訊
-- MegaRAID 硬碟與 SMART 資訊
+- MegaRAID Physical Disk 與 SMART 資訊
 - 磁碟健康狀態與容量資訊
 - Node Summary 硬體資訊整合
+- 背景 runtime JSON 採集
 - `remod` 重新套用客製化 UI
 - `restore` 還原官方 UI
 
@@ -169,7 +172,7 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 | 文件 | 內容 |
 |---|---|
 | [00. PVE 系統初始化與優化](00.PVE系統初始化與優化.md) | 初始化、Repository、時間同步、Ceph、升級、重新套用與還原 |
-| [01. PVE 硬體監控客製化](01.PVE硬體監控客製化.md) | 硬體資訊收集、Node Summary 客製化、安裝與實機驗證 |
+| [01. PVE 硬體監控客製化](01.PVE硬體監控客製化.md) | 硬體資訊收集、Node Summary 客製化、背景採集、安裝與實機驗證 |
 
 ---
 
@@ -178,7 +181,7 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 | 腳本 | 用途 |
 |---|---|
 | [`pve_init.sh`](src/pve/pve_init.sh) | PVE 系統初始化、優化、升級、Ceph、UI 套用與還原 |
-| [`disk_monitor.sh`](src/pve/disk_monitor.sh) | 硬體資訊收集與 PVE Node Summary 客製化 |
+| [`disk_monitor.sh`](src/pve/disk_monitor.sh) | 硬體資訊採集、runtime JSON 與 PVE Node Summary 客製化 |
 
 ---
 
@@ -201,7 +204,7 @@ Pve-Toolkits/
 └── README.md
 ```
 
-- `img/p00/`：00 文件與專案流程圖
+- `img/p00/`：00 文件與專案流程圖及安裝畫面
 - `img/p01/`：01 文件使用的圖片
 - `src/pve/`：正式使用的 PVE Shell 工具
 - `00.PVE系統初始化與優化.md`：初始化與系統優化文件
