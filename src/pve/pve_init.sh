@@ -329,7 +329,8 @@ if [[ "$actual_version" == "$DOWNLOAD_VERSION" ]]; then
 
     echo
     echo "  ${C_GREEN}${C_BOLD}✓ 版本相同，自動執行 v${DOWNLOAD_VERSION}${C_RESET}"
-    for ((count=60; count>=1; count--)); do
+    echo "  ${C_CYAN}→ 按 Enter 可立即執行，未操作將於 30 秒後自動執行${C_RESET}"
+    for ((count=30; count>=1; count--)); do
         printf "\r  ${C_CYAN}→${C_RESET} 將於 %2d 秒後執行 disk_monitor.sh v${DOWNLOAD_VERSION}..." "$count"
         if IFS= read -r -t 1; then
             break
@@ -379,13 +380,15 @@ echo "${C_CYAN}${C_BOLD}========================================================
 printf '  %b：%d 項\n' "$OK" "$OK_COUNT"
 printf '  %b：%d 項\n' "$FAIL" "$FAIL_COUNT"
 printf '  %b：%d 項\n' "$WARN" "$WARN_COUNT"
-echo
-if (( FAIL_COUNT > 0 )); then
-    echo "${C_RED}${C_BOLD}結果：✗ 失敗${C_RESET}"
-    echo "${C_RED}請處理上方紅色項目後重新執行。${C_RESET}"
-elif (( WARN_COUNT > 0 )); then
-    echo "${C_YELLOW}${C_BOLD}結果：⚠ 有警告${C_RESET}"
-    echo "${C_YELLOW}目前有警告項目；如需完整執行可重新指定對應選項。${C_RESET}"
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    echo
+    echo "${C_RED}${C_BOLD}結果：✗ 有失敗項目，請檢查上方訊息。${C_RESET}"
+    exit 1
+elif [[ "$WARN_COUNT" -gt 0 ]]; then
+    echo
+    echo "${C_YELLOW}${C_BOLD}結果：⚠ 完成，但有警告項目。${C_RESET}"
 else
+    echo
     echo "${C_GREEN}${C_BOLD}結果：✓ 完成${C_RESET}"
 fi
