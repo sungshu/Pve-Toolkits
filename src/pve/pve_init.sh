@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # PVE Toolkit - Proxmox VE 9（Debian 13 Trixie）台灣環境主機初始化、優化與硬體監控入口
-# Version: 2.1.7
-# Updated: 2026-09-07
+# Version: 2.1.8
+# Updated: 2026-09-15
 set -Eeuo pipefail
 
-SCRIPT_VERSION="2.1.7"
+SCRIPT_VERSION="2.1.8"
 readonly DEBIAN_MIRROR="https://mirror.twds.com.tw/debian"
 readonly DEBIAN_SECURITY="https://security.debian.org/debian-security"
 readonly PVE_REPOSITORY="http://download.proxmox.com/debian/pve"
 readonly CEPH_REPOSITORY="http://download.proxmox.com/debian/ceph-squid"
-readonly REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/PVE-Toolkit/main/src/pve"
+readonly REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve"
 readonly MONITOR_RAW="${REPOSITORY_RAW}/disk_monitor.sh"
 readonly SUITE="trixie"
 INTERNAL_NTP="${INTERNAL_NTP:-}"
@@ -215,24 +215,28 @@ EOF
 [[ -f /etc/apt/apt.conf.d/no-nag-script ]] && ok_item "Subscription Nag Hook" "已設定" || fail_item "Subscription Nag Hook" "設定失敗"
 
 print_section "[4/6] 必要套件"
+info_item "APT Update" "正在更新套件索引..."
 if apt update >/tmp/pve_toolkit_step.$$ 2>&1; then
     ok_item "APT Update" "完成"
 else
     fail_item "APT Update" "失敗"
     echo "    ${C_RED}錯誤：$(tail -n 3 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
 fi
+info_item "Required Packages" "正在安裝必要套件..."
 if apt install -y chrony lm-sensors smartmontools linux-cpupower nvme-cli hdparm curl wget util-linux jq >/tmp/pve_toolkit_step.$$ 2>&1; then
     ok_item "Required Packages" "安裝完成"
 else
     fail_item "Required Packages" "安裝失敗"
     echo "    ${C_RED}錯誤：$(tail -n 3 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
 fi
+info_item "proxmox-widget-toolkit" "正在重新安裝..."
 if apt --reinstall install -y proxmox-widget-toolkit >/tmp/pve_toolkit_step.$$ 2>&1; then
     ok_item "proxmox-widget-toolkit" "重新安裝完成"
 else
     fail_item "proxmox-widget-toolkit" "重新安裝失敗"
 fi
 if [[ "$DO_UPGRADE" -eq 1 ]]; then
+    info_item "System Upgrade" "正在執行 apt full-upgrade..."
     if apt full-upgrade -y >/tmp/pve_toolkit_step.$$ 2>&1; then
         ok_item "System Upgrade" "full-upgrade 完成"
     else
@@ -268,6 +272,7 @@ print_section "[6/6] 硬體監控"
 rm -f "$disk_script"
 monitor_tmp="${disk_script}.tmp.$$"
 monitor_url="${MONITOR_RAW}?v=$(date +%s)"
+info_item "disk_monitor.sh" "正在下載並驗證 v1.0.52..."
 if curl -fsSL "$monitor_url" -o "$monitor_tmp" >/tmp/pve_toolkit_step.$$ 2>&1; then
     chmod 0755 "$monitor_tmp"
     if grep -q '^VERSION="1\.0\.52"' "$monitor_tmp"; then
