@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # PVE Toolkit - Proxmox VE 9（Debian 13 Trixie）台灣環境主機初始化、優化與硬體監控入口
-# Version: 2.1.8
+# Version: 2.1.9
 # Updated: 2026-09-15
 set -Eeuo pipefail
 
-SCRIPT_VERSION="2.1.8"
+SCRIPT_VERSION="2.1.9"
 readonly DEBIAN_MIRROR="https://mirror.twds.com.tw/debian"
 readonly DEBIAN_SECURITY="https://security.debian.org/debian-security"
 readonly PVE_REPOSITORY="http://download.proxmox.com/debian/pve"
@@ -269,32 +269,108 @@ else
 fi
 
 print_section "[6/6] 硬體監控"
-rm -f "$disk_script"
 monitor_tmp="${disk_script}.tmp.$$"
-monitor_url="${MONITOR_RAW}?v=$(date +%s)"
-info_item "disk_monitor.sh" "正在下載並驗證 v1.0.52..."
-if curl -fsSL "$monitor_url" -o "$monitor_tmp" >/tmp/pve_toolkit_step.$$ 2>&1; then
-    chmod 0755 "$monitor_tmp"
-    if grep -q '^VERSION="1\.0\.52"' "$monitor_tmp"; then
-        mv -f "$monitor_tmp" "$disk_script"
-        chmod 0755 "$disk_script"
-        installed_version="$(grep -m1 '^VERSION=' "$disk_script" | tr -d '\"' | cut -d= -f2)"
-        ok_item "disk_monitor.sh" "已安裝"
-        ok_item "Version" "$installed_version"
-        ok_item "Path" "$disk_script"
-    else
-        fail_item "disk_monitor.sh" "下載版本驗證失敗"
-        echo "    ${C_RED}實際版本：$(grep -m1 '^VERSION=' "$monitor_tmp" || echo 未知)${C_RESET}"
-        rm -f "$monitor_tmp"
+latest_tmp="${disk_script}.latest.$$"
+latest_url="${MONITOR_RAW}?v=$(date +%s)"
+
+info_item "Latest Version" "正在確認目前最新版..."
+if curl -fsSL "$latest_url" -o "$latest_tmp" >/tmp/pve_toolkit_step.$$ 2>&1; then
+    latest_version="$(grep -m1 '^VERSION=' "$latest_tmp" | cut -d'=' -f2- | tr -d '\"' | tr -d '\r')"
+    if [[ -z "$latest_version" ]]; then
+        fail_item "Latest Version" "無法解析版本"
+        rm -f "$latest_tmp" "$monitor_tmp" /tmp/pve_toolkit_step.$$
         exit 1
     fi
+    ok_item "Latest Version" "v${latest_version}"
 else
-    fail_item "disk_monitor.sh" "下載失敗"
-    rm -f "$monitor_tmp"
+    fail_item "Latest Version" "取得最新版失敗"
+    rm -f "$latest_tmp" "$monitor_tmp" /tmp/pve_toolkit_step.$$
     exit 1
 fi
 
-rm -f /tmp/pve_toolkit_step.$$
+DOWNLOAD_VERSION="${DISK_MONITOR_VERSION:-$latest_version}"
+DOWNLOAD_REF="${DISK_MONITOR_REF:-main}"
+
+info_item "Download Version" "v${DOWNLOAD_VERSION}"
+info_item "Execute Version" "v${DOWNLOAD_VERSION}"
+info_item "disk_monitor.sh" "正在下載 v${DOWNLOAD_VERSION}..."
+
+if [[ "$DOWNLOAD_REF" == "main" && "$DOWNLOAD_VERSION" == "$latest_version" ]]; then
+    cp -f "$latest_tmp" "$monitor_tmp"
+elif [[ "$DOWNLOAD_REF" == "main" ]]; then
+    if ! curl -fsSL "$latest_url" -o "$monitor_tmp" >/tmp/pve_toolkit_step.$$ 2>&1; then
+        fail_item "disk_monitor.sh" "下載失敗"
+        rm -f "$latest_tmp" "$monitor_tmp" /tmp/pve_toolkit_step.$$
+        exit 1
+    fi
+else
+    version_url="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/${DOWNLOAD_REF}/src/pve/disk_monitor.sh"
+    if ! curl -fsSL "${version_url}?v=$(date +%s)" -o "$monitor_tmp" >/tmp/pve_toolkit_step.$$ 2>&1; then
+        fail_item "disk_monitor.sh" "下載 v${DOWNLOAD_VERSION} 失敗"
+        rm -f "$latest_tmp" "$monitor_tmp" /tmp/pve_toolkit_step.$$
+        exit 1
+    fi
+fi
+
+chmod 0755 "$monitor_tmp"
+actual_version="$(grep -m1 '^VERSION=' "$monitor_tmp" | cut -d'=' -f2- | tr -d '\"' | tr -d '\r')"
+info_item "Actual Version" "v${actual_version:-未知}"
+
+if [[ -z "$actual_version" ]]; then
+    fail_item "Version Check" "無法取得實際版本"
+    rm -f "$latest_tmp" "$monitor_tmp"
+    exit 1
+fi
+
+if [[ "$actual_version" == "$DOWNLOAD_VERSION" ]]; then
+    ok_item "Version Check" "版本相同（v${actual_version}）"
+    mv -f "$monitor_tmp" "$disk_script"
+    chmod 0755 "$disk_script"
+
+    echo
+    echo "  ${C_GREEN}${C_BOLD}✓ 版本相同，自動執行 v${DOWNLOAD_VERSION}${C_RESET}"
+    for ((count=60; count>=1; count--)); do
+        printf "\r  ${C_CYAN}→${C_RESET} 將於 %2d 秒後執行 disk_monitor.sh v${DOWNLOAD_VERSION}..." "$count"
+        sleep 1
+    done
+    printf '\r%*s\r' 90 ''
+    info_item "Execute" "開始執行 v${DOWNLOAD_VERSION}..."
+    if "$disk_script" install >/tmp/pve_toolkit_step.$$ 2>&1; then
+        ok_item "disk_monitor.sh" "v${DOWNLOAD_VERSION} 執行完成"
+    else
+        fail_item "disk_monitor.sh" "v${DOWNLOAD_VERSION} 執行失敗"
+        echo "    ${C_RED}錯誤：$(tail -n 5 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
+        rm -f "$latest_tmp" /tmp/pve_toolkit_step.$$
+        exit 1
+    fi
+else
+    warn_item "Version Check" "版本不同（下載 v${DOWNLOAD_VERSION} / 實際 v${actual_version} / 最新 v${latest_version}）"
+    echo
+    echo "  ${C_YELLOW}${C_BOLD}⚠ 版本不同，是否執行 v${actual_version}？ [Y/N]${C_RESET}"
+    read -r -p "  ${C_YELLOW}請選擇 [Y/N]：${C_RESET}" execute_choice
+    case "$execute_choice" in
+        Y|y)
+            mv -f "$monitor_tmp" "$disk_script"
+            chmod 0755 "$disk_script"
+            ok_item "Execute Decision" "使用者選擇執行 v${actual_version}"
+            info_item "Execute" "開始執行 v${actual_version}..."
+            if "$disk_script" install >/tmp/pve_toolkit_step.$$ 2>&1; then
+                ok_item "disk_monitor.sh" "v${actual_version} 執行完成"
+            else
+                fail_item "disk_monitor.sh" "v${actual_version} 執行失敗"
+                echo "    ${C_RED}錯誤：$(tail -n 5 /tmp/pve_toolkit_step.$$ | tr '\n' ' ')${C_RESET}"
+                rm -f "$latest_tmp" /tmp/pve_toolkit_step.$$
+                exit 1
+            fi
+            ;;
+        *)
+            warn_item "Execute Decision" "使用者選擇不執行"
+            rm -f "$monitor_tmp"
+            ;;
+    esac
+fi
+
+rm -f "$latest_tmp" /tmp/pve_toolkit_step.$$
 
 echo
 echo "${C_CYAN}${C_BOLD}=========================================================${C_RESET}"
