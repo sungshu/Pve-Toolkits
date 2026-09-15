@@ -243,7 +243,7 @@ if [[ "$DO_UPGRADE" -eq 1 ]]; then
         fail_item "System Upgrade" "full-upgrade 失敗"
     fi
 else
-    warn_item "System Upgrade" "未執行（未指定 --upgrade）"
+    info_item "System Upgrade" "未執行（未指定 --upgrade）"
 fi
 
 for pkg in chrony lm-sensors smartmontools linux-cpupower nvme-cli hdparm curl wget util-linux jq proxmox-widget-toolkit; do
