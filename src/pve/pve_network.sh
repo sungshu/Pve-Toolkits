@@ -1333,11 +1333,7 @@ main_menu()
     while true; do
         show_header
         echo "  PVE 節點：$(get_node_name)"
-        if cluster_quorate && cluster_joined; then
-            echo -e "${GREEN}  Cluster  ：$(cluster_status_text)${NC}"
-        else
-            echo -e "${RED}  Cluster  ：$(cluster_status_text)${NC}"
-        fi
+        echo -e "  Cluster  ：$(cluster_status_text)"
         echo "  PVE 版本 ：$(get_pve_version)"
         echo ""
         echo "------------------------------------------------------------"
