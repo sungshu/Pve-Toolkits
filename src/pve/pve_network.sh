@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.1.1
+# Version: 1.1.2
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 UPDATED="2026-09-30"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -752,8 +752,12 @@ vss_uplink_add()
         printf "  %2d) %-12s  PVE：%s\n" "${i}" "$(get_vswitch_name "${bridge}")" "${bridge}"
         i=$((i + 1))
     done
+    echo "   0) 返回"
     while true; do
         read -r -p "請選擇：" choice
+        if [[ "${choice}" == "0" ]]; then
+            return 0
+        fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
             bridge="${bridges[$((choice - 1))]}"
             break
