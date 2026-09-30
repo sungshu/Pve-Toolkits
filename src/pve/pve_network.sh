@@ -1445,7 +1445,7 @@ main_menu()
             3) show_current_network ;;
             4) rollback_menu ;;
             5) baseline_menu ;;
-            6) port_group_menu ;;
+            6) port_group_platform_menu ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
