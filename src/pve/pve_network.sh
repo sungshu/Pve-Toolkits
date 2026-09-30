@@ -2,10 +2,14 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.0.0
+# Version: 1.0.1
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
+UPDATED="2026-09-30"
+REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
+LATEST_VERSION=""
+UPDATE_STATUS="尚未檢查"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -44,6 +48,9 @@ show_header()
     echo -e "  PVE NETWORK PRO"
     echo -e "  Proxmox VE 網路架構設定"
     echo -e "  VMware 網路架構模式"
+    echo -e "  Version : v${SCRIPT_VERSION}"
+    echo -e "  Updated : ${UPDATED}"
+    echo -e "  最新版  : ${LATEST_VERSION:-未檢查} / ${UPDATE_STATUS}"
     echo -e "  作者: sungshu"
     echo -e "  GitHub: https://github.com/sungshu"
     echo -e "  專案: https://github.com/sungshu/Pve-Toolkits"
@@ -83,6 +90,35 @@ check_environment()
 
     [[ -d /etc/pve ]] || die "/etc/pve 不存在，這不是有效的 PVE 環境。"
     [[ -f /etc/network/interfaces ]] || die "/etc/network/interfaces 不存在。"
+}
+
+check_latest_version()
+{
+    LATEST_VERSION=""
+    UPDATE_STATUS="無法檢查"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        UPDATE_STATUS="未安裝 curl"
+        return 0
+    fi
+
+    local remote_version
+    remote_version="$(curl -fsSL --connect-timeout 5 --max-time 10 "${REPOSITORY_RAW}" 2>/dev/null | awk -F"=" '/^[[:space:]]*SCRIPT_VERSION="[^"]+"/ {gsub(/"/, "", $2); print $2; exit}' || true)"
+
+    if [[ -z "${remote_version}" ]]; then
+        UPDATE_STATUS="無法取得 GitHub 最新版本"
+        return 0
+    fi
+
+    LATEST_VERSION="${remote_version}"
+
+    if [[ "${LATEST_VERSION}" == "${SCRIPT_VERSION}" ]]; then
+        UPDATE_STATUS="已是最新版"
+    elif printf "%s\n%s\n" "${SCRIPT_VERSION}" "${LATEST_VERSION}" | sort -V | tail -n 1 | grep -qx "${LATEST_VERSION}"; then
+        UPDATE_STATUS="有新版可用：v${LATEST_VERSION}"
+    else
+        UPDATE_STATUS="目前版本高於 GitHub：v${LATEST_VERSION}"
+    fi
 }
 
 get_pve_version()
@@ -1307,6 +1343,7 @@ main_menu()
         echo "  4) Rollback / 還原"
         echo "  5) Baseline 管理"
         echo "  6) Port Group 管理"
+        echo "  7) 檢查版本 / GitHub 最新版"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
@@ -1321,6 +1358,21 @@ main_menu()
             4) rollback_menu ;;
             5) baseline_menu ;;
             6) port_group_menu ;;
+            7)
+                check_latest_version
+                show_header
+                echo "============================================================"
+                echo " 版本檢查"
+                echo "============================================================"
+                echo ""
+                echo "目前版本：v${SCRIPT_VERSION}"
+                echo "更新日期：${UPDATED}"
+                echo "GitHub  ：${LATEST_VERSION:-無法取得}"
+                echo "狀態    ：${UPDATE_STATUS}"
+                echo "來源    ：${REPOSITORY_RAW}"
+                echo ""
+                pause_screen
+                ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
@@ -1335,6 +1387,7 @@ main()
     require_root
     check_environment
     ensure_dirs
+    check_latest_version
     main_menu
 }
 
