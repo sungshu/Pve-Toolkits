@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.1.2
+# Version: 1.1.3
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 UPDATED="2026-09-30"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -259,8 +259,13 @@ select_nic()
         i=$((i + 1))
     done
 
+    echo "   0) 返回"
     while true; do
         read -r -p "${prompt}：" choice
+        if [[ "${choice}" == "0" ]]; then
+            SELECTED_NIC=""
+            return 1
+        fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#nics[@]})); then
             SELECTED_NIC="${nics[$((choice - 1))]}"
             return 0
@@ -766,7 +771,10 @@ vss_uplink_add()
     done
 
     show_nics
-    select_nic "請選擇第一張 Physical NIC"
+    if ! select_nic "請選擇第一張 Physical NIC"; then
+        pause_screen
+        return 0
+    fi
     local first_nic="${SELECTED_NIC}"
 
     select_bond_mode
@@ -861,17 +869,12 @@ vss_show()
     echo "Linux Bridge："
     ip -br link show type bridge 2>/dev/null | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
     echo ""
-    echo "Uplink / Bond："
+    echo "Physical Uplink："
     if [[ -f /proc/net/bonding/bond0 ]]; then
+        echo "PVE Bond：bond0"
         grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' /proc/net/bonding/bond0 || true
     else
-        local nic1 nic2 mode
-        nic1="$(awk -F '\\t' '$1=="VSS" && $2=="nic1" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
-        nic2="$(awk -F '\\t' '$1=="VSS" && $2=="nic2" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
-        mode="$(awk -F '\\t' '$1=="VSS" && $2=="bond_mode" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
-        echo "NIC 1：${nic1:-未設定}"
-        echo "NIC 2：${nic2:-未設定}"
-        echo "Bond ：${mode:-未設定}"
+        echo "狀態：尚未設定 Physical Uplink"
     fi
     echo ""
     echo "Port Group："
@@ -1049,8 +1052,12 @@ select_sdn_bridge()
         i=$((i + 1))
     done
 
+    echo "  0) 返回"
     while true; do
         read -r -p "請選擇：" choice
+        if [[ "${choice}" == "0" ]]; then
+            return 1
+        fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
             SDN_BRIDGE="${bridges[$((choice - 1))]}"
             return 0
@@ -1108,7 +1115,10 @@ vds_setup()
     fi
 
     select_sdn_zone || { pause_screen; return 0; }
-    select_sdn_bridge
+    if ! select_sdn_bridge; then
+        pause_screen
+        return 0
+    fi
 
     echo ""
     echo "------------------------------------------------------------"
@@ -1225,12 +1235,17 @@ vss_port_group_create()
     echo "（VMware 名稱為主，PVE Bridge 為註解）"
     local i=1
     for bridge in "${bridges[@]}"; do
-        printf "  %2d) %s\n" "${i}" "${bridge}"
+        printf "  %2d) %-12s  PVE：%s\n" "${i}" "$(get_vswitch_name "${bridge}")" "${bridge}"
         i=$((i + 1))
     done
+    echo "   0) 返回"
 
     while true; do
         read -r -p "請選擇：" choice
+        if [[ "${choice}" == "0" ]]; then
+            pause_screen
+            return 0
+        fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
             bridge="${bridges[$((choice - 1))]}"
             break
