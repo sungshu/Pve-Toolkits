@@ -904,47 +904,103 @@ vds_setup()
     pause_screen
 }
 
-port_group_list()
+
+port_group_list_vss()
 {
     echo "============================================================"
-    echo " Port Group / VNet"
+    echo " VSS Port Group"
     echo "============================================================"
     echo ""
-    echo "名稱與 VLAN ID 分開管理。"
-    echo "例如：vLan050 不代表 VLAN 50。"
+    echo "VSS Port Group = Linux Bridge + VLAN ID。"
+    echo "不建立 SDN VNet，VM 使用 vmbr + VLAN Tag 對應。"
+    echo ""
+
+    local found=0
+    if [[ -f "${STATE_FILE}" ]]; then
+        while IFS=$'\t' read -r type name value; do
+            [[ "${type}" == "VSS_PORT_GROUP" ]] || continue
+            found=1
+            local bridge
+            bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            printf "  - %-20s VLAN ID=%-5s Bridge=%s\n" "${name}" "${value}" "${bridge:-未知}"
+        done < "${STATE_FILE}"
+    fi
+
+    ((found == 1)) || echo "目前沒有 VSS Port Group。"
+}
+
+port_group_list_vds()
+{
+    echo "============================================================"
+    echo " VDS Port Group / VNet"
+    echo "============================================================"
     echo ""
 
     pvesh get /cluster/sdn/vnets 2>/dev/null || true
     echo ""
-    echo "目前記錄的本工具物件："
+    echo "目前記錄的本工具 VDS Port Group："
     if [[ -f "${STATE_FILE}" ]]; then
         awk -F '\t' '$1=="PORT_GROUP" {printf "  - %-20s VLAN ID=%s\n", $2, $3}' "${STATE_FILE}"
     fi
 }
 
-port_group_create()
+port_group_list()
 {
     show_header
     echo "============================================================"
-    echo " Port Group 建立"
+    echo " Port Group 管理 - 目前設定"
+    echo "============================================================"
+    echo ""
+    port_group_list_vss
+    echo ""
+    port_group_list_vds
+}
+
+vss_port_group_create()
+{
+    show_header
+    echo "============================================================"
+    echo " VSS Port Group 建立"
+    echo " Standard Virtual Switch / Linux Bridge"
     echo "============================================================"
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
 
-    local zone
-    if ! select_sdn_zone; then
+    local -a bridges=()
+    local bridge choice
+    while read -r bridge; do
+        [[ -n "${bridge}" ]] && bridges+=("${bridge}")
+    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+
+    if (("${#bridges[@]}" == 0)); then
+        log_error "找不到 vmbr Bridge。請先建立 VSS / Bridge。"
         pause_screen
         return 0
     fi
-    zone="${SDN_ZONE}"
+
+    echo "選擇 VSS / Linux Bridge："
+    local i=1
+    for bridge in "${bridges[@]}"; do
+        printf "  %2d) %s\n" "${i}" "${bridge}"
+        i=$((i + 1))
+    done
+
+    while true; do
+        read -r -p "請選擇：" choice
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
+            bridge="${bridges[$((choice - 1))]}"
+            break
+        fi
+        log_error "選擇無效。"
+    done
 
     local vnet vlan
     while true; do
         read -r -p "Port Group 名稱：" vnet
         [[ "${vnet}" =~ ^[A-Za-z0-9_-]+$ ]] || { log_error "名稱只能使用英數、底線、連字號。"; continue; }
-        if port_group_exists_sdn "${vnet}"; then
-            log_error "Port Group / VNet ${vnet} 已存在。"
+        if awk -F '\t' -v n="${vnet}" '$1=="VSS_PORT_GROUP" && $2==n {found=1} END{exit !found}' "${STATE_FILE}" 2>/dev/null; then
+            log_error "VSS Port Group ${vnet} 已存在。"
             continue
         fi
         break
@@ -958,11 +1014,11 @@ port_group_create()
 
     echo ""
     echo "------------------------------------------------------------"
-    echo " Port Group 確認"
+    echo " VSS Port Group 確認"
     echo "------------------------------------------------------------"
     echo " 名稱   ：${vnet}"
     echo " VLAN ID：${vlan}"
-    echo " Zone   ：${zone}"
+    echo " Bridge ：${bridge}"
     echo "------------------------------------------------------------"
     echo ""
 
@@ -971,45 +1027,46 @@ port_group_create()
         return 0
     fi
 
-    vds_create_vnet "${zone}" "${vnet}" "${vlan}"
-    save_state "PORT_GROUP" "${vnet}" "${vlan}"
-    save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"
+    save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
+    save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
 
-    if confirm "現在 Apply SDN？"; then
-        pvesh set /cluster/sdn
-        log_ok "SDN Apply 完成。"
-    fi
-
-    log_ok "Port Group 建立完成：${vnet} / VLAN ${vlan}"
+    log_ok "VSS Port Group 建立完成：${vnet} / VLAN ${vlan} / ${bridge}"
+    echo ""
+    echo "注意：VSS Port Group 不建立 SDN VNet。"
+    echo "VM 使用 ${bridge}，並以 VLAN Tag ${vlan} 對應此 Port Group。"
     pause_screen
 }
 
-port_group_delete()
+vds_port_group_create()
+{
+    port_group_create
+}
+
+vss_port_group_delete()
 {
     show_header
     echo "============================================================"
-    echo " Port Group 刪除"
+    echo " VSS Port Group 刪除"
     echo "============================================================"
     echo ""
-    echo "只允許刪除本工具記錄建立的 Port Group。"
-    echo "不會盲刪整個 SDN。"
+    echo "只允許刪除本工具建立的 VSS Port Group。"
     echo ""
 
-    local -a vnets=()
-    local vnet choice
-    while read -r vnet; do
-        [[ -n "${vnet}" ]] && vnets+=("${vnet}")
-    done < <(awk -F '\t' '$1=="PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+    local -a names=()
+    local name choice
+    while read -r name; do
+        [[ -n "${name}" ]] && names+=("${name}")
+    done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
-    if ((${#vnets[@]} == 0)); then
-        echo "沒有本工具建立的 Port Group。"
+    if (("${#names[@]}" == 0)); then
+        echo "沒有本工具建立的 VSS Port Group。"
         pause_screen
         return 0
     fi
 
     local i=1
-    for vnet in "${vnets[@]}"; do
-        printf "  %2d) %s\n" "$i" "$vnet"
+    for name in "${names[@]}"; do
+        printf "  %2d) %s\n" "${i}" "${name}"
         i=$((i + 1))
     done
     echo "  0) 返回"
@@ -1017,27 +1074,30 @@ port_group_delete()
     while true; do
         read -r -p "請選擇：" choice
         [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
-        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#vnets[@]})); then
-            vnet="${vnets[$((choice - 1))]}"
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#names[@]})); then
+            name="${names[$((choice - 1))]}"
             break
         fi
         log_error "選擇無效。"
     done
 
-    if ! confirm "確認刪除 ${vnet}？"; then
+    if ! confirm "確認刪除 VSS Port Group ${name}？"; then
         pause_screen
         return 0
     fi
 
-    pvesh delete "/cluster/sdn/vnets/${vnet}"
-    pvesh set /cluster/sdn
-    remove_state_entry "PORT_GROUP" "${vnet}"
-    remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
-    log_ok "Port Group ${vnet} 已刪除。"
+    remove_state_entry "VSS_PORT_GROUP" "${name}"
+    remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${name}"
+    log_ok "VSS Port Group ${name} 已刪除。"
     pause_screen
 }
 
-port_group_menu()
+vds_port_group_delete()
+{
+    port_group_delete
+}
+
+port_group_platform_menu()
 {
     while true; do
         show_header
@@ -1045,18 +1105,54 @@ port_group_menu()
         echo " Port Group 管理"
         echo "============================================================"
         echo ""
-        echo "  1) 查看 Port Group / VNet"
-        echo "  2) 建立 Port Group"
-        echo "  3) 刪除本工具建立的 Port Group"
+        echo "  1) VSS Port Group"
+        echo "  2) VDS Port Group"
         echo "  0) 返回"
         echo ""
 
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) show_header; port_group_list; pause_screen ;;
-            2) port_group_create ;;
-            3) port_group_delete ;;
+            1)
+                show_header
+                echo "============================================================"
+                echo " VSS Port Group"
+                echo "============================================================"
+                echo ""
+                echo "  1) 查看 VSS Port Group"
+                echo "  2) 建立 VSS Port Group"
+                echo "  3) 刪除 VSS Port Group"
+                echo "  0) 返回"
+                echo ""
+                read -r -p "請選擇：" choice
+                case "${choice}" in
+                    1) show_header; port_group_list_vss; pause_screen ;;
+                    2) vss_port_group_create ;;
+                    3) vss_port_group_delete ;;
+                    0) ;;
+                    *) log_error "選擇無效。"; sleep 1 ;;
+                esac
+                ;;
+            2)
+                show_header
+                echo "============================================================"
+                echo " VDS Port Group"
+                echo "============================================================"
+                echo ""
+                echo "  1) 查看 VDS Port Group / VNet"
+                echo "  2) 建立 VDS Port Group"
+                echo "  3) 刪除 VDS Port Group"
+                echo "  0) 返回"
+                echo ""
+                read -r -p "請選擇：" choice
+                case "${choice}" in
+                    1) show_header; port_group_list_vds; pause_screen ;;
+                    2) vds_port_group_create ;;
+                    3) vds_port_group_delete ;;
+                    0) ;;
+                    *) log_error "選擇無效。"; sleep 1 ;;
+                esac
+                ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
