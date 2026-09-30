@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.0.1
+# Version: 1.1.0
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.1.0"
 UPDATED="2026-09-30"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -604,18 +604,21 @@ apply_interfaces()
     ifreload -a
 }
 
-vss_setup()
+vss_create()
 {
     show_header
     echo "============================================================"
-    echo " VSS 設定"
-    echo " Standard Virtual Switch"
+    echo " VSS 管理 - 建立 Virtual Switch"
     echo "============================================================"
     echo ""
+    echo "VMware 模型：先建立 vSwitch，再另外設定 Uplink。"
+    echo "PVE 對應：VSS = Linux Bridge（vmbrX）。"
+    echo ""
+
+    cluster_guard || { pause_screen; return 0; }
 
     if ! baseline_exists; then
         echo "尚未建立 Baseline。"
-        echo ""
         if confirm "現在建立 Baseline？"; then
             create_baseline
         else
@@ -625,94 +628,312 @@ vss_setup()
         fi
     fi
 
-    cluster_guard || { pause_screen; return 0; }
-
-    if ! confirm "確認開始 VSS 網路設定？"; then
-        log_info "已取消。"
-        pause_screen
-        return 0
-    fi
-
-    echo ""
     if ! select_bridge; then
         pause_screen
         return 0
     fi
 
-    show_nics
-    select_nic "請選擇第一張 Uplink NIC"
-    FIRST_NIC="${SELECTED_NIC}"
-
-    select_bond_mode
-
-    SECONDARY_NIC=""
-    if [[ -n "${BOND_MODE}" ]]; then
-        select_second_nic "${FIRST_NIC}"
-        if [[ -z "${SECONDARY_NIC}" ]]; then
-            log_error "選擇 Bond 模式時必須使用兩張實體 NIC。"
-            pause_screen
-            return 0
-        fi
-    else
-        echo ""
-        echo "不使用 Bond，可只使用第一張 NIC。"
-    fi
+    local bridge="${SELECTED_BRIDGE}"
 
     echo ""
     echo "------------------------------------------------------------"
-    echo " VSS 設定確認"
+    echo " VSS 建立確認"
     echo "------------------------------------------------------------"
-    echo " Virtual Switch：${SELECTED_BRIDGE}"
-    echo " 第一張 NIC     ：${FIRST_NIC}"
-    echo " 第二張 NIC     ：${SECONDARY_NIC:-未使用}"
-    echo " Bond 模式      ：${BOND_MODE:-不使用 Bond}"
-    echo " 管理 IP        ：${CURRENT_IP:-未偵測}"
-    echo " Gateway        ：${CURRENT_GW:-未偵測}"
+    echo " VSS / vSwitch ：${bridge}"
+    echo " Uplink         ：稍後由「VSS Uplink 管理」設定"
+    echo " Port Group     ：稍後由「Port Group 管理」建立"
+    echo " VMkernel       ：沿用現有管理介面，另行管理"
     echo "------------------------------------------------------------"
     echo ""
 
-    if ! confirm "確認套用以上 VSS 設定？"; then
+    if ! confirm "確認建立 / 註冊 VSS ${bridge}？"; then
         log_info "已取消。"
         pause_screen
         return 0
     fi
 
     ensure_dirs
+
+    if [[ -e "/sys/class/net/${bridge}" ]]; then
+        save_state "VSS" "bridge" "${bridge}"
+        log_ok "VSS ${bridge} 已建立 / 註冊。"
+        echo "注意：本步驟不選 NIC、不建立 Bond、不變更 Uplink。"
+        echo "下一步請使用「VSS Uplink 管理」設定 nic2 / nic3。"
+        pause_screen
+        return 0
+    fi
+
+    log_step "建立新的 Linux Bridge：${bridge}"
     save_interfaces_copy "${VSS_DIR}/interfaces.before"
     network_snapshot "${VSS_DIR}/network.before"
 
-    if ! write_vss_interfaces "${SELECTED_BRIDGE}" "${FIRST_NIC}" "${SECONDARY_NIC}" "${BOND_MODE}"; then
-        log_error "VSS 設定檔建立失敗。"
-        cp -a "${VSS_DIR}/interfaces.before" /etc/network/interfaces
-        pause_screen
-        return 1
-    fi
+    cat >> /etc/network/interfaces <<EOF
+
+auto ${bridge}
+iface ${bridge} inet manual
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    bridge-vlan-aware yes
+    bridge-vids 2-4094
+EOF
 
     if ! apply_interfaces; then
-        log_error "VSS 套用失敗，立即嘗試還原變更前設定。"
+        log_error "VSS ${bridge} 建立 / 套用失敗。"
         cp -a "${VSS_DIR}/interfaces.before" /etc/network/interfaces
         ifreload -a || true
         pause_screen
         return 1
     fi
 
-    if ! validate_network_after_change "${SELECTED_BRIDGE}"; then
-        log_error "VSS 驗證失敗，停止後續操作。"
-        echo ""
+    if ! validate_network_after_change "${bridge}"; then
+        log_error "VSS ${bridge} 驗證失敗。"
         echo "變更前設定保存於：${VSS_DIR}/interfaces.before"
         pause_screen
         return 1
     fi
 
+    save_state "VSS" "bridge" "${bridge}"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.vss"
-    save_state "VSS" "bridge" "${SELECTED_BRIDGE}"
-    save_state "VSS" "nic1" "${FIRST_NIC}"
-    [[ -n "${SECONDARY_NIC}" ]] && save_state "VSS" "nic2" "${SECONDARY_NIC}"
-    save_state "VSS" "bond_mode" "${BOND_MODE:-none}"
-
-    log_ok "VSS 設定生效完成。"
-    echo "保存位置：${VSS_DIR}/interfaces.vss"
+    log_ok "VSS ${bridge} 建立完成。"
+    echo "目前尚未設定 Uplink。"
     pause_screen
+}
+
+vss_uplink_add()
+{
+    show_header
+    echo "============================================================"
+    echo " VSS Uplink 管理 - 新增 / 設定 Uplink"
+    echo "============================================================"
+    echo ""
+    echo "VMware 模型：vSwitch 建立後，再指定 Physical Uplink。"
+    echo "PVE 對應：nic → bond（可選）→ vmbr。"
+    echo ""
+
+    cluster_guard || { pause_screen; return 0; }
+
+    if ! baseline_exists; then
+        log_error "尚未建立 Baseline，停止 Uplink 變更。"
+        pause_screen
+        return 0
+    fi
+
+    local -a bridges=()
+    local bridge choice
+    while read -r bridge; do
+        [[ -n "${bridge}" ]] && bridges+=("${bridge}")
+    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+
+    if (("${#bridges[@]}" == 0)); then
+        log_error "找不到 VSS / vmbr。請先建立 VSS。"
+        pause_screen
+        return 0
+    fi
+
+    echo "選擇 VSS / vSwitch："
+    local i=1
+    for bridge in "${bridges[@]}"; do
+        printf "  %2d) %s\n" "${i}" "${bridge}"
+        i=$((i + 1))
+    done
+    while true; do
+        read -r -p "請選擇：" choice
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
+            bridge="${bridges[$((choice - 1))]}"
+            break
+        fi
+        log_error "選擇無效。"
+    done
+
+    show_nics
+    select_nic "請選擇第一張 Uplink NIC"
+    local first_nic="${SELECTED_NIC}"
+
+    select_bond_mode
+    local second_nic=""
+    if [[ -n "${BOND_MODE}" ]]; then
+        select_second_nic "${first_nic}"
+        if [[ -z "${SECONDARY_NIC}" ]]; then
+            log_error "選擇 Bond 模式時必須使用兩張實體 NIC。"
+            pause_screen
+            return 0
+        fi
+        second_nic="${SECONDARY_NIC}"
+    fi
+
+    get_management_info
+
+    echo ""
+    echo "------------------------------------------------------------"
+    echo " VSS Uplink 確認"
+    echo "------------------------------------------------------------"
+    echo " VSS / vSwitch ：${bridge}"
+    echo " Uplink 1      ：${first_nic}"
+    echo " Uplink 2      ：${second_nic:-未使用}"
+    echo " Bond 模式     ：${BOND_MODE:-不使用 Bond}"
+    echo " 管理 IP       ：${CURRENT_IP:-未偵測}"
+    echo " Gateway       ：${CURRENT_GW:-未偵測}"
+    echo "------------------------------------------------------------"
+    echo ""
+    echo "注意：本步驟才會建立 / 調整 bond0 與 vmbr Uplink。"
+    echo ""
+
+    if ! confirm "確認套用 VSS Uplink？"; then
+        log_info "已取消。"
+        pause_screen
+        return 0
+    fi
+
+    ensure_dirs
+    save_interfaces_copy "${VSS_DIR}/interfaces.before-uplink"
+    network_snapshot "${VSS_DIR}/network.before-uplink"
+
+    if ! write_vss_interfaces "${bridge}" "${first_nic}" "${second_nic}" "${BOND_MODE}"; then
+        log_error "VSS Uplink 設定檔建立失敗。"
+        pause_screen
+        return 1
+    fi
+
+    if ! apply_interfaces; then
+        log_error "VSS Uplink 套用失敗，立即嘗試還原。"
+        cp -a "${VSS_DIR}/interfaces.before-uplink" /etc/network/interfaces
+        ifreload -a || true
+        pause_screen
+        return 1
+    fi
+
+    if ! validate_network_after_change "${bridge}"; then
+        log_error "VSS Uplink 驗證失敗。"
+        echo "變更前設定保存於：${VSS_DIR}/interfaces.before-uplink"
+        pause_screen
+        return 1
+    fi
+
+    save_state "VSS" "bridge" "${bridge}"
+    save_state "VSS" "nic1" "${first_nic}"
+    remove_state_entry "VSS" "nic2"
+    if [[ -n "${second_nic}" ]]; then
+        save_state "VSS" "nic2" "${second_nic}"
+    fi
+    save_state "VSS" "bond_mode" "${BOND_MODE:-none}"
+    cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.vss"
+
+    log_ok "VSS Uplink 設定生效完成。"
+    echo "VSS ${bridge} 現已具備 Uplink。"
+    pause_screen
+}
+
+vss_show()
+{
+    show_header
+    echo "============================================================"
+    echo " VSS / vSwitch 目前設定"
+    echo "============================================================"
+    echo ""
+
+    local bridge
+    bridge="$(awk -F '\\t' '$1=="VSS" && $2=="bridge" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+
+    echo "VSS / vSwitch ：${bridge:-尚未由本工具建立 / 註冊}"
+    echo ""
+    echo "Linux Bridge："
+    ip -br link show type bridge 2>/dev/null | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
+    echo ""
+    echo "Uplink / Bond："
+    if [[ -f /proc/net/bonding/bond0 ]]; then
+        grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' /proc/net/bonding/bond0 || true
+    else
+        local nic1 nic2 mode
+        nic1="$(awk -F '\\t' '$1=="VSS" && $2=="nic1" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        nic2="$(awk -F '\\t' '$1=="VSS" && $2=="nic2" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        mode="$(awk -F '\\t' '$1=="VSS" && $2=="bond_mode" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        echo "NIC 1：${nic1:-未設定}"
+        echo "NIC 2：${nic2:-未設定}"
+        echo "Bond ：${mode:-未設定}"
+    fi
+    echo ""
+    echo "Port Group："
+    port_group_list_vss
+    echo ""
+    echo "VMkernel / Management："
+    get_management_info
+    echo "  Device ：${DEV_WITH_GW:-未偵測}"
+    echo "  IP     ：${CURRENT_IP:-未偵測}"
+    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    pause_screen
+}
+
+vss_manage_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " VSS 管理"
+        echo " Standard Virtual Switch"
+        echo "============================================================"
+        echo ""
+        echo "  1) 建立 / 註冊 VSS"
+        echo "  2) 查看 VSS"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_create ;;
+            2) vss_show ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+vss_uplink_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " VSS Uplink 管理"
+        echo "============================================================"
+        echo ""
+        echo "  1) 新增 / 設定 Uplink"
+        echo "  2) 查看 VSS"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_uplink_add ;;
+            2) vss_show ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+vss_setup()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " VSS / vSwitch"
+        echo "============================================================"
+        echo ""
+        echo "  1) VSS 管理"
+        echo "  2) Uplink 管理"
+        echo "  3) 查看 VSS"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_manage_menu ;;
+            2) vss_uplink_menu ;;
+            3) vss_show ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
 }
 
 show_vds_config()
@@ -1426,7 +1647,7 @@ main_menu()
         echo ""
         echo "------------------------------------------------------------"
         echo ""
-        echo "  1) VSS 設定（Standard Virtual Switch）"
+        echo "  1) VSS / vSwitch 管理（Standard Virtual Switch）"
         echo "  2) VDS 設定（Distributed Virtual Switch / SDN）"
         echo "  3) 查看目前網路設定"
         echo "  4) Rollback / 還原"
