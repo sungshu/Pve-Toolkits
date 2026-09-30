@@ -1070,14 +1070,6 @@ show_current_network()
     echo " 目前網路設定"
     echo "============================================================"
     echo ""
-    echo "PVE 節點：$(get_node_name)"
-    echo "PVE 版本：$(get_pve_version)"
-    if cluster_quorate && cluster_joined; then
-        echo -e "${GREEN}Cluster  ：$(cluster_status_text)${NC}"
-    else
-        echo -e "${RED}Cluster  ：$(cluster_status_text)${NC}"
-    fi
-    echo ""
 
     get_management_info
     echo "管理連線："
