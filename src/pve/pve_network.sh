@@ -1377,7 +1377,7 @@ main_menu()
                 echo "離開 PVE NETWORK PRO。"
                 return 0
                 ;;
-            *) log_error "選擇無效，請輸入 0～6。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入 0～7。"; sleep 1 ;;
         esac
     done
 }
