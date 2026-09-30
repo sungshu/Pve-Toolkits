@@ -1072,7 +1072,11 @@ show_current_network()
     echo ""
     echo "PVE 節點：$(get_node_name)"
     echo "PVE 版本：$(get_pve_version)"
-    echo "Cluster  ：$(cluster_status_text)"
+    if cluster_quorate && cluster_joined; then
+        echo -e "Cluster  ：${GREEN}$(cluster_status_text)${NC}"
+    else
+        echo -e "Cluster  ：${RED}$(cluster_status_text)${NC}"
+    fi
     echo ""
 
     get_management_info
