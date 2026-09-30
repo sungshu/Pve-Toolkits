@@ -15,12 +15,12 @@ VDS_DIR="${BASE_DIR}/vds"
 STATE_DIR="${BASE_DIR}/state"
 STATE_FILE="${STATE_DIR}/objects.conf"
 
-log_info()  { echo -e "${CYAN}[ \$(date '+%H:%M:%S') ] INFO${NC}  \$*"; }
-log_ok()    { echo -e "${GREEN}[ \$(date '+%H:%M:%S') ] OK${NC}    \$*"; }
-log_step()  { echo -e "${YELLOW}[ \$(date '+%H:%M:%S') ] STEP${NC}  \$*"; }
-log_error() { echo -e "${RED}[ \$(date '+%H:%M:%S') ] ERROR${NC} \$*" >&2; }
-die()       { log_error "\$*"; exit 1; }
-need()      { command -v "\$1" >/dev/null 2>&1 || die "找不到必要程式：\$1"; }
+log_info()  { echo -e "${CYAN}[ $(date '+%H:%M:%S') ] INFO${NC}  $*"; }
+log_ok()    { echo -e "${GREEN}[ $(date '+%H:%M:%S') ] OK${NC}    $*"; }
+log_step()  { echo -e "${YELLOW}[ $(date '+%H:%M:%S') ] STEP${NC}  $*"; }
+log_error() { echo -e "${RED}[ $(date '+%H:%M:%S') ] ERROR${NC} $*" >&2; }
+die()       { log_error "$*"; exit 1; }
+need()      { command -v "$1" >/dev/null 2>&1 || die "找不到必要程式：$1"; }
 
 trap 'log_error "發生未預期錯誤，行號：${LINENO}，請檢查目前網路狀態。"' ERR
 
@@ -53,7 +53,7 @@ pause_screen()
 
 confirm()
 {
-    local prompt="\$1"
+    local prompt="$1"
     local answer
     read -r -p "${prompt} [y/N]: " answer
     [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
@@ -61,7 +61,7 @@ confirm()
 
 require_root()
 {
-    [[ "\$(id -u)" -eq 0 ]] || die "請使用 root 執行此工具。"
+    [[ "$(id -u)" -eq 0 ]] || die "請使用 root 執行此工具。"
 }
 
 check_environment()
@@ -82,7 +82,7 @@ check_environment()
 get_pve_version()
 {
     if command -v pveversion >/dev/null 2>&1; then
-        pveversion | awk -F'/' 'NR==1 {print \$2}'
+        pveversion | awk -F'/' 'NR==1 {print $2}'
     else
         echo "未知"
     fi
@@ -101,7 +101,7 @@ cluster_joined()
 cluster_quorate()
 {
     local status
-    status="\$(pvecm status 2>/dev/null || true)"
+    status="$(pvecm status 2>/dev/null || true)"
     grep -qE 'Quorate:\s+Yes|Quorate:\s+1' <<<"${status}"
 }
 
@@ -118,18 +118,18 @@ cluster_status_text()
 
 get_management_info()
 {
-    CURRENT_GW="\$(ip route show default 2>/dev/null | awk 'NR==1 {print \$3}')"
-    DEV_WITH_GW="\$(ip route show default 2>/dev/null | awk 'NR==1 {print \$5}')"
+    CURRENT_GW="$(ip route show default 2>/dev/null | awk 'NR==1 {print $3}')"
+    DEV_WITH_GW="$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')"
     CURRENT_IP=""
 
     if [[ -n "${DEV_WITH_GW}" ]]; then
-        CURRENT_IP="\$(ip -4 -o addr show dev "${DEV_WITH_GW}" scope global 2>/dev/null | awk 'NR==1 {print \$4}')"
+        CURRENT_IP="$(ip -4 -o addr show dev "${DEV_WITH_GW}" scope global 2>/dev/null | awk 'NR==1 {print $4}')"
     fi
 }
 
 is_physical_nic()
 {
-    local nic="\$1"
+    local nic="$1"
     [[ -d "/sys/class/net/${nic}" ]] || return 1
     [[ "${nic}" != "lo" ]] || return 1
     [[ -e "/sys/class/net/${nic}/device" ]] || return 1
@@ -150,15 +150,15 @@ get_physical_nics()
 
 get_link_state()
 {
-    local nic="\$1"
+    local nic="$1"
     cat "/sys/class/net/${nic}/operstate" 2>/dev/null || echo "unknown"
 }
 
 get_link_speed()
 {
-    local nic="\$1"
+    local nic="$1"
     local speed
-    speed="\$(cat "/sys/class/net/${nic}/speed" 2>/dev/null || true)"
+    speed="$(cat "/sys/class/net/${nic}/speed" 2>/dev/null || true)"
     if [[ -z "${speed}" || "${speed}" == "-1" ]]; then
         echo "Unknown"
     else
@@ -178,10 +178,10 @@ show_nics()
 
     while read -r nic; do
         [[ -n "${nic}" ]] || continue
-        state="\$(get_link_state "${nic}")"
-        speed="\$(get_link_speed "${nic}")"
+        state="$(get_link_state "${nic}")"
+        speed="$(get_link_speed "${nic}")"
         printf "  %2d) %-12s %-12s %s\n" "${index}" "${nic}" "${speed}" "${state}"
-        index=\$((index + 1))
+        index=$((index + 1))
     done < <(get_physical_nics)
 
     [[ ${index} -gt 1 ]] || die "找不到可用的實體 NIC。"
@@ -190,7 +190,7 @@ show_nics()
 
 select_nic()
 {
-    local prompt="\$1"
+    local prompt="$1"
     local exclude="${2:-}"
     local -a nics=()
     local nic choice
@@ -206,14 +206,14 @@ select_nic()
     echo ""
     local i=1
     for nic in "${nics[@]}"; do
-        printf "  %2d) %-12s %-12s %s\n" "\$i" "\$nic" "\$(get_link_speed "\$nic")" "\$(get_link_state "\$nic")"
-        i=\$((i + 1))
+        printf "  %2d) %-12s %-12s %s\n" "$i" "$nic" "$(get_link_speed "$nic")" "$(get_link_state "$nic")"
+        i=$((i + 1))
     done
 
     while true; do
         read -r -p "${prompt}：" choice
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#nics[@]})); then
-            SELECTED_NIC="${nics[\$((choice - 1))]}"
+            SELECTED_NIC="${nics[$((choice - 1))]}"
             return 0
         fi
         log_error "選擇無效，請輸入上方數字。"
@@ -238,12 +238,12 @@ select_bridge()
     if ((${#bridges[@]} > 0)); then
         local i=1
         for bridge in "${bridges[@]}"; do
-            printf "  %2d) 使用現有 %-12s\n" "\$i" "\$bridge"
-            i=\$((i + 1))
+            printf "  %2d) 使用現有 %-12s\n" "$i" "$bridge"
+            i=$((i + 1))
         done
     fi
 
-    local new_index=\$(( ${#bridges[@]} + 1 ))
+    local new_index=$(( ${#bridges[@]} + 1 ))
     printf "  %2d) 建立新的 vmbr\n" "${new_index}"
     echo "  0) 返回"
 
@@ -253,7 +253,7 @@ select_bridge()
             return 1
         fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
-            SELECTED_BRIDGE="${bridges[\$((choice - 1))]}"
+            SELECTED_BRIDGE="${bridges[$((choice - 1))]}"
             return 0
         fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice == new_index)); then
@@ -299,7 +299,7 @@ select_bond_mode()
 
 select_second_nic()
 {
-    local first="\$1"
+    local first="$1"
     local -a nics=()
     local nic choice
 
@@ -316,8 +316,8 @@ select_second_nic()
 
     local i=1
     for nic in "${nics[@]}"; do
-        printf "  %2d) %-12s %-12s %s\n" "\$i" "\$nic" "\$(get_link_speed "\$nic")" "\$(get_link_state "\$nic")"
-        i=\$((i + 1))
+        printf "  %2d) %-12s %-12s %s\n" "$i" "$nic" "$(get_link_speed "$nic")" "$(get_link_state "$nic")"
+        i=$((i + 1))
     done
     echo "  0) 不使用第二張 NIC"
     echo ""
@@ -329,7 +329,7 @@ select_second_nic()
             return 0
         fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#nics[@]})); then
-            SECONDARY_NIC="${nics[\$((choice - 1))]}"
+            SECONDARY_NIC="${nics[$((choice - 1))]}"
             return 0
         fi
         log_error "選擇無效。"
@@ -347,8 +347,7 @@ baseline_exists()
     [[ -f "${BASELINE_DIR}/interfaces.orig" && \
        -f "${BASELINE_DIR}/pvecm-status.orig" && \
        -f "${BASELINE_DIR}/pvecm-nodes.orig" && \
-       -f "${BASELINE_DIR}/ip-address.orig" && \
-       -f "${BASELINE_DIR}/ip-route.orig" ]]
+       -f "${BASELINE_DIR}/ip-address.orig" && \       -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
 
 create_baseline()
@@ -393,7 +392,7 @@ show_baseline()
     if baseline_exists; then
         echo "狀態：已建立"
         echo "位置：${BASELINE_DIR}"
-        [[ -f "${BASELINE_DIR}/created-at" ]] && echo "建立時間：\$(cat "${BASELINE_DIR}/created-at")"
+        [[ -f "${BASELINE_DIR}/created-at" ]] && echo "建立時間：$(cat "${BASELINE_DIR}/created-at")"
         echo ""
         echo "保存檔案："
         find "${BASELINE_DIR}" -maxdepth 1 -type f -printf '  - %f\n' | sort
@@ -404,22 +403,22 @@ show_baseline()
 
 save_interfaces_copy()
 {
-    local target="\$1"
+    local target="$1"
     cp -a /etc/network/interfaces "${target}"
 }
 
 write_vss_interfaces()
 {
-    local bridge="\$1"
-    local nic1="\$2"
-    local nic2="\$3"
-    local bond_mode="\$4"
+    local bridge="$1"
+    local nic1="$2"
+    local nic2="$3"
+    local bond_mode="$4"
     local bond_name="bond0"
     local temp
 
     get_management_info
 
-    temp="\$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+    temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
 
     {
         echo "auto lo"
@@ -476,25 +475,25 @@ validate_interfaces_syntax()
 
 save_state()
 {
-    local type="\$1"
-    local key="\$2"
-    local value="\$3"
+    local type="$1"
+    local key="$2"
+    local value="$3"
     ensure_dirs
     printf '%s\t%s\t%s\n' "${type}" "${key}" "${value}" >> "${STATE_FILE}"
 }
 
 state_has()
 {
-    local type="\$1" key="\$2"
+    local type="$1" key="$2"
     [[ -f "${STATE_FILE}" ]] || return 1
-    awk -F '\t' -v t="${type}" -v k="${key}" '\$1==t && \$2==k {found=1} END{exit !found}' "${STATE_FILE}"
+    awk -F '\t' -v t="${type}" -v k="${key}" '$1==t && $2==k {found=1} END{exit !found}' "${STATE_FILE}"
 }
 
 remove_state_entry()
 {
-    local type="\$1" key="\$2"
+    local type="$1" key="$2"
     [[ -f "${STATE_FILE}" ]] || return 0
-    awk -F '\t' -v t="${type}" -v k="${key}" '!( \$1==t && \$2==k )' "${STATE_FILE}" > "${STATE_FILE}.tmp"
+    awk -F '\t' -v t="${type}" -v k="${key}" '!( $1==t && $2==k )' "${STATE_FILE}" > "${STATE_FILE}.tmp"
     mv -f "${STATE_FILE}.tmp" "${STATE_FILE}"
 }
 
@@ -513,7 +512,7 @@ cluster_guard()
 
 network_snapshot()
 {
-    local file="\$1"
+    local file="$1"
     {
         echo "===== date ====="
         date
@@ -528,7 +527,7 @@ network_snapshot()
 
 validate_network_after_change()
 {
-    local bridge="\$1"
+    local bridge="$1"
     local before_cluster after_cluster
 
     log_step "驗證網路與 Cluster 狀態"
@@ -543,12 +542,12 @@ validate_network_after_change()
         return 1
     fi
 
-    before_cluster="\$(cluster_status_text)"
+    before_cluster="$(cluster_status_text)"
     if ! cluster_quorate; then
         log_error "變更後 Cluster Quorum 不正常：${before_cluster}"
         return 1
     fi
-    after_cluster="\$(cluster_status_text)"
+    after_cluster="$(cluster_status_text)"
 
     log_ok "Bridge ${bridge} 驗證完成。"
     log_ok "Cluster：${after_cluster}"
@@ -697,8 +696,7 @@ select_sdn_zone()
     local choice
     echo "============================================================"
     echo " 分散式交換器（VDS / SDN）"
-    echo "============================================================"
-    echo ""
+    echo "============================================================"    echo ""
     echo "  1) 建立新的 SDN Zone"
     echo "  2) 使用現有 SDN Zone"
     echo "  0) 返回"
@@ -732,14 +730,14 @@ select_sdn_zone()
 
                 local i=1
                 for zone in "${zones[@]}"; do
-                    printf "  %2d) %s\n" "\$i" "\$zone"
-                    i=\$((i + 1))
+                    printf "  %2d) %s\n" "$i" "$zone"
+                    i=$((i + 1))
                 done
 
                 while true; do
                     read -r -p "請選擇：" choice
                     if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#zones[@]})); then
-                        SDN_ZONE="${zones[\$((choice - 1))]}"
+                        SDN_ZONE="${zones[$((choice - 1))]}"
                         return 0
                     fi
                     log_error "選擇無效。"
@@ -765,14 +763,14 @@ select_sdn_bridge()
     echo "承載 VDS / SDN 的底層 Bridge："
     local i=1
     for bridge in "${bridges[@]}"; do
-        printf "  %2d) %s\n" "\$i" "\$bridge"
-        i=\$((i + 1))
+        printf "  %2d) %s\n" "$i" "$bridge"
+        i=$((i + 1))
     done
 
     while true; do
         read -r -p "請選擇：" choice
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
-            SDN_BRIDGE="${bridges[\$((choice - 1))]}"
+            SDN_BRIDGE="${bridges[$((choice - 1))]}"
             return 0
         fi
         log_error "選擇無效。"
@@ -781,27 +779,27 @@ select_sdn_bridge()
 
 vds_create_zone()
 {
-    local zone="\$1" bridge="\$2"
+    local zone="$1" bridge="$2"
     log_step "建立 SDN Zone：${zone}"
     pvesh create /cluster/sdn/zones --zone "${zone}" --type vlan --bridge "${bridge}"
 }
 
 vds_create_vnet()
 {
-    local zone="\$1" vnet="\$2" tag="\$3"
+    local zone="$1" vnet="$2" tag="$3"
     log_step "建立 VNet / Port Group：${vnet} / VLAN ${tag}"
     pvesh create /cluster/sdn/vnets --vnet "${vnet}" --zone "${zone}" --tag "${tag}"
 }
 
 valid_vlan_id()
 {
-    local vlan="\$1"
+    local vlan="$1"
     [[ "${vlan}" =~ ^[0-9]+$ ]] && ((vlan >= 1 && vlan <= 4094))
 }
 
 port_group_exists_sdn()
 {
-    local vnet="\$1"
+    local vnet="$1"
     pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1
 }
 
@@ -880,7 +878,7 @@ port_group_list()
     echo ""
     echo "目前記錄的本工具物件："
     if [[ -f "${STATE_FILE}" ]]; then
-        awk -F '\t' '\$1=="PORT_GROUP" {printf "  - %-20s VLAN ID=%s\n", \$2, \$3}' "${STATE_FILE}"
+        awk -F '\t' '$1=="PORT_GROUP" {printf "  - %-20s VLAN ID=%s\n", $2, $3}' "${STATE_FILE}"
     fi
 }
 
@@ -961,7 +959,7 @@ port_group_delete()
     local vnet choice
     while read -r vnet; do
         [[ -n "${vnet}" ]] && vnets+=("${vnet}")
-    done < <(awk -F '\t' '\$1=="PORT_GROUP" {print \$2}' "${STATE_FILE}" 2>/dev/null || true)
+    done < <(awk -F '\t' '$1=="PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
     if ((${#vnets[@]} == 0)); then
         echo "沒有本工具建立的 Port Group。"
@@ -971,8 +969,8 @@ port_group_delete()
 
     local i=1
     for vnet in "${vnets[@]}"; do
-        printf "  %2d) %s\n" "\$i" "\$vnet"
-        i=\$((i + 1))
+        printf "  %2d) %s\n" "$i" "$vnet"
+        i=$((i + 1))
     done
     echo "  0) 返回"
 
@@ -980,7 +978,7 @@ port_group_delete()
         read -r -p "請選擇：" choice
         [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#vnets[@]})); then
-            vnet="${vnets[\$((choice - 1))]}"
+            vnet="${vnets[$((choice - 1))]}"
             break
         fi
         log_error "選擇無效。"
@@ -1032,9 +1030,9 @@ show_current_network()
     echo " 目前網路設定"
     echo "============================================================"
     echo ""
-    echo "PVE 節點：\$(get_node_name)"
-    echo "PVE 版本：\$(get_pve_version)"
-    echo "Cluster  ：\$(cluster_status_text)"
+    echo "PVE 節點：$(get_node_name)"
+    echo "PVE 版本：$(get_pve_version)"
+    echo "Cluster  ：$(cluster_status_text)"
     echo ""
 
     get_management_info
@@ -1047,9 +1045,8 @@ show_current_network()
     echo "------------------------------------------------------------"
     echo " 實體 NIC"
     echo "------------------------------------------------------------"
-    while read -r nic; do
-        [[ -n "${nic}" ]] || continue
-        printf "  %-12s %-12s %s\n" "${nic}" "\$(get_link_speed "${nic}")" "\$(get_link_state "${nic}")"
+    while read -r nic; do        [[ -n "${nic}" ]] || continue
+        printf "  %-12s %-12s %s\n" "${nic}" "$(get_link_speed "${nic}")" "$(get_link_state "${nic}")"
     done < <(get_physical_nics)
 
     echo ""
@@ -1058,7 +1055,7 @@ show_current_network()
     echo "------------------------------------------------------------"
     ip -br link show type bridge 2>/dev/null || true
     echo ""
-    ip -br addr show | awk '\$1 ~ /^vmbr[0-9]+$/ {print}' || true
+    ip -br addr show | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
 
     echo ""
     echo "------------------------------------------------------------"
@@ -1067,7 +1064,7 @@ show_current_network()
     if ls /proc/net/bonding/* >/dev/null 2>&1; then
         for file in /proc/net/bonding/*; do
             [[ -f "${file}" ]] || continue
-            echo "[\$(basename "${file}")]"
+            echo "[$(basename "${file}")]"
             grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${file}" || true
             echo ""
         done
@@ -1142,7 +1139,7 @@ rollback_vds()
     local zone
     while read -r zone; do
         [[ -n "${zone}" ]] && zones+=("${zone}")
-    done < <(awk -F '\t' '\$1=="VDS_ZONE" {print \$2}' "${STATE_FILE}" 2>/dev/null || true)
+    done < <(awk -F '\t' '$1=="VDS_ZONE" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
     if ((${#zones[@]} == 0)); then
         echo "沒有本工具建立的 SDN Zone。"
@@ -1152,8 +1149,8 @@ rollback_vds()
 
     local i=1 choice
     for zone in "${zones[@]}"; do
-        printf "  %2d) %s\n" "\$i" "\$zone"
-        i=\$((i + 1))
+        printf "  %2d) %s\n" "$i" "$zone"
+        i=$((i + 1))
     done
     echo "  0) 返回"
 
@@ -1161,7 +1158,7 @@ rollback_vds()
         read -r -p "選擇要 Rollback 的 Zone：" choice
         [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#zones[@]})); then
-            zone="${zones[\$((choice - 1))]}"
+            zone="${zones[$((choice - 1))]}"
             break
         fi
         log_error "選擇無效。"
@@ -1176,7 +1173,7 @@ rollback_vds()
     local vnet
     while read -r vnet; do
         [[ -n "${vnet}" ]] && vnets+=("${vnet}")
-    done < <(awk -F '\t' -v z="${zone}" '\$1=="PORT_GROUP_ZONE" && \$3==z {print \$2}' "${STATE_FILE}" 2>/dev/null || true)
+    done < <(awk -F '\t' -v z="${zone}" '$1=="PORT_GROUP_ZONE" && $3==z {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
     for vnet in "${vnets[@]}"; do
         if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
@@ -1220,7 +1217,7 @@ rollback_baseline()
 
     cluster_guard || { pause_screen; return 0; }
 
-    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.\$(date +%Y%m%d%H%M%S)"
+    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
     cp -a "${BASELINE_DIR}/interfaces.orig" /etc/network/interfaces
 
     if ! ifreload -a; then
@@ -1291,9 +1288,9 @@ main_menu()
 {
     while true; do
         show_header
-        echo "  PVE 節點：\$(get_node_name)"
-        echo "  Cluster  ：\$(cluster_status_text)"
-        echo "  PVE 版本 ：\$(get_pve_version)"
+        echo "  PVE 節點：$(get_node_name)"
+        echo "  Cluster  ：$(cluster_status_text)"
+        echo "  PVE 版本 ：$(get_pve_version)"
         echo ""
         echo "------------------------------------------------------------"
         echo ""
@@ -1335,5 +1332,5 @@ main()
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "\$@"
+    main "$@"
 fi
