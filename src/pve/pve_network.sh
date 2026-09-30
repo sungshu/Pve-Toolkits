@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# PVE NETWORK PRO - Proxmox VE 網路架構設定工具
+# Version: 1.0.0
+# Updated: 2026-09-30
+
+SCRIPT_VERSION="1.0.0"
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -347,7 +353,8 @@ baseline_exists()
     [[ -f "${BASELINE_DIR}/interfaces.orig" && \
        -f "${BASELINE_DIR}/pvecm-status.orig" && \
        -f "${BASELINE_DIR}/pvecm-nodes.orig" && \
-       -f "${BASELINE_DIR}/ip-address.orig" && \       -f "${BASELINE_DIR}/ip-route.orig" ]]
+       -f "${BASELINE_DIR}/ip-address.orig" && \
+       -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
 
 create_baseline()
