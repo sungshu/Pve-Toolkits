@@ -1019,8 +1019,12 @@ select_sdn_zone()
                     i=$((i + 1))
                 done
 
+                echo "  0) 返回"
                 while true; do
                     read -r -p "請選擇：" choice
+                    if [[ "${choice}" == "0" ]]; then
+                        return 1
+                    fi
                     if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#zones[@]})); then
                         SDN_ZONE="${zones[$((choice - 1))]}"
                         return 0
