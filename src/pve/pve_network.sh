@@ -1344,7 +1344,6 @@ main_menu()
         echo "  4) Rollback / 還原"
         echo "  5) Baseline 管理"
         echo "  6) Port Group 管理"
-        echo "  7) 檢查版本 / GitHub 最新版"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
@@ -1359,26 +1358,11 @@ main_menu()
             4) rollback_menu ;;
             5) baseline_menu ;;
             6) port_group_menu ;;
-            7)
-                check_latest_version
-                show_header
-                echo "============================================================"
-                echo " 版本檢查"
-                echo "============================================================"
-                echo ""
-                echo "目前版本：v${SCRIPT_VERSION}"
-                echo "更新日期：${UPDATED}"
-                echo "GitHub  ：${LATEST_VERSION:-無法取得}"
-                echo "狀態    ：${UPDATE_STATUS}"
-                echo "來源    ：${REPOSITORY_RAW}"
-                echo ""
-                pause_screen
-                ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
                 ;;
-            *) log_error "選擇無效，請輸入 0～7。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入 0～6。"; sleep 1 ;;
         esac
     done
 }
