@@ -5,7 +5,7 @@
 ![PVE Toolkit 自動化管理流程](img/p00/PVE-Toolkit_自動化管理流程.jpg)
 
 > **🇹🇼 TW 繁體中文版**  
-> **目前版本：PVE Toolkit 2.1.9 / disk_monitor.sh 1.3.6-Pro**  
+> **目前版本：PVE Toolkit 2.1.9 / disk_monitor.sh 1.3.6-Pro / pve_network.sh 1.0.1**  
 > **適用環境：Proxmox VE 9.x / Debian 13 Trixie**
 
 PVE Toolkit 是針對 Proxmox VE 主機日常建置與維護所整理的 Shell 工具與實戰文件。
@@ -173,6 +173,7 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 |---|---|
 | [00. PVE 系統初始化與優化](00.PVE系統初始化與優化.md) | 初始化、Repository、時間同步、Ceph、升級、重新套用與還原 |
 | [01. PVE 硬體監控客製化](01.PVE硬體監控客製化.md) | 硬體資訊收集、Node Summary 客製化、背景採集、安裝與實機驗證 |
+| [02. PVE 網路架構與 VSS / VDS 管理](02.PVE網路架構與VSS-VDS管理.md) | VSS、Linux Bridge、Bond、VDS、PVE SDN、VNet、Port Group、Baseline、Rollback 與版本檢查 |
 
 ---
 
@@ -182,6 +183,7 @@ INTERNAL_NTP=192.168.0.100 bash <(curl -fsSL https://raw.githubusercontent.com/s
 |---|---|
 | [`pve_init.sh`](src/pve/pve_init.sh) | PVE 系統初始化、優化、升級、Ceph、UI 套用與還原 |
 | [`disk_monitor.sh`](src/pve/disk_monitor.sh) | 硬體資訊採集、runtime JSON 與 PVE Node Summary 客製化 |
+| [`pve_network.sh`](src/pve/pve_network.sh) | PVE NETWORK PRO：VSS、VDS / SDN、Port Group、Baseline、Rollback 與最新版檢查 |
 
 ---
 
@@ -196,10 +198,12 @@ Pve-Toolkits/
 ├── src/
 │   └── pve/
 │       ├── pve_init.sh
-│       └── disk_monitor.sh
+│       ├── disk_monitor.sh
+│       └── pve_network.sh
 │
 ├── 00.PVE系統初始化與優化.md
 ├── 01.PVE硬體監控客製化.md
+├── 02.PVE網路架構與VSS-VDS管理.md
 ├── LICENSE
 └── README.md
 ```
@@ -209,6 +213,7 @@ Pve-Toolkits/
 - `src/pve/`：正式使用的 PVE Shell 工具
 - `00.PVE系統初始化與優化.md`：初始化與系統優化文件
 - `01.PVE硬體監控客製化.md`：硬體監控與 PVE Web UI 客製化文件
+- `02.PVE網路架構與VSS-VDS管理.md`：PVE NETWORK PRO 網路架構、VSS / VDS、SDN、Port Group、Baseline 與 Rollback 文件
 
 ---
 
