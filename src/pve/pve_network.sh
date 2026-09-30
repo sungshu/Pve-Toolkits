@@ -147,11 +147,11 @@ cluster_quorate()
 cluster_status_text()
 {
     if ! cluster_joined; then
-        echo -e "${RED}未加入${NC}"
+        echo -e "未${RED}加入${NC}"
     elif cluster_quorate; then
-        echo -e "${GREEN}已加入 / Quorum 正常${NC}"
+        echo -e "已加入 / Quorum ${GREEN}正常${NC}"
     else
-        echo -e "${RED}已加入 / Quorum 異常${NC}"
+        echo -e "已加入 / Quorum ${RED}異常${NC}"
     fi
 }
 
