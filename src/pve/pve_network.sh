@@ -10,6 +10,8 @@ UPDATED="2026-09-30"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
+NETWORK_SCRIPT_PATH="/root/pve_network.sh"
+NETWORK_UPDATE_GUARD="${PVE_NETWORK_UPDATED:-0}"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -89,33 +91,77 @@ check_environment()
     [[ -f /etc/network/interfaces ]] || die "/etc/network/interfaces 不存在。"
 }
 
-check_latest_version()
+update_network_script()
 {
     LATEST_VERSION=""
     UPDATE_STATUS="無法檢查"
+
+    if [[ "${NETWORK_UPDATE_GUARD}" == "1" ]]; then
+        UPDATE_STATUS="已完成更新"
+        return 0
+    fi
 
     if ! command -v curl >/dev/null 2>&1; then
         UPDATE_STATUS="未安裝 curl"
         return 0
     fi
 
-    local remote_version
-    remote_version="$(curl -fsSL --connect-timeout 5 --max-time 10 "${REPOSITORY_RAW}" 2>/dev/null | awk -F"=" '/^[[:space:]]*SCRIPT_VERSION="[^"]+"/ {gsub(/"/, "", $2); print $2; exit}' || true)"
+    local latest_tmp
+    local actual_version
+    local latest_url
+    latest_tmp="/root/.pve_network.sh.latest.$$"
+    latest_url="${REPOSITORY_RAW}?v=$(date +%s)"
 
-    if [[ -z "${remote_version}" ]]; then
+    if ! curl -fsSL --connect-timeout 5 --max-time 20 "${latest_url}" -o "${latest_tmp}" 2>/dev/null; then
+        rm -f "${latest_tmp}"
         UPDATE_STATUS="無法取得 GitHub 最新版本"
         return 0
     fi
 
-    LATEST_VERSION="${remote_version}"
+    actual_version="$(grep -m1 '^SCRIPT_VERSION="[^"]*"' "${latest_tmp}" | cut -d'=' -f2- | tr -d '"' | tr -d '\r')"
 
-    if [[ "${LATEST_VERSION}" == "${SCRIPT_VERSION}" ]]; then
-        UPDATE_STATUS="已是最新版"
-    elif printf "%s\n%s\n" "${SCRIPT_VERSION}" "${LATEST_VERSION}" | sort -V | tail -n 1 | grep -qx "${LATEST_VERSION}"; then
-        UPDATE_STATUS="有新版可用：v${LATEST_VERSION}"
-    else
-        UPDATE_STATUS="目前版本高於 GitHub：v${LATEST_VERSION}"
+    if [[ -z "${actual_version}" ]]; then
+        rm -f "${latest_tmp}"
+        UPDATE_STATUS="無法解析 GitHub 版本"
+        return 0
     fi
+
+    LATEST_VERSION="${actual_version}"
+
+    if [[ "${actual_version}" != "${SCRIPT_VERSION}" ]]; then
+        if printf "%s\n%s\n" "${SCRIPT_VERSION}" "${actual_version}" | sort -V | tail -n 1 | grep -qx "${actual_version}"; then
+            UPDATE_STATUS="有新版可用：v${actual_version}"
+        else
+            UPDATE_STATUS="GitHub 版本較舊：v${actual_version}"
+        fi
+    else
+        UPDATE_STATUS="已是最新版"
+    fi
+
+    chmod 0755 "${latest_tmp}"
+
+    if ! bash -n "${latest_tmp}" >/dev/null 2>&1; then
+        rm -f "${latest_tmp}"
+        UPDATE_STATUS="GitHub 腳本語法驗證失敗"
+        return 0
+    fi
+
+    if ! mv -f "${latest_tmp}" "${NETWORK_SCRIPT_PATH}"; then
+        rm -f "${latest_tmp}"
+        UPDATE_STATUS="無法寫入 ${NETWORK_SCRIPT_PATH}"
+        return 0
+    fi
+
+    chmod 0755 "${NETWORK_SCRIPT_PATH}"
+
+    if [[ "${actual_version}" == "${SCRIPT_VERSION}" ]]; then
+        UPDATE_STATUS="已下載並寫入 /root（已是最新版）"
+    else
+        UPDATE_STATUS="已下載並寫入 /root：v${actual_version}"
+    fi
+
+    export PVE_NETWORK_UPDATED=1
+    exec "${NETWORK_SCRIPT_PATH}" "$@"
 }
 
 get_pve_version()
@@ -1723,7 +1769,7 @@ main()
     require_root
     check_environment
     ensure_dirs
-    check_latest_version
+    update_network_script "$@"
     main_menu
 }
 
