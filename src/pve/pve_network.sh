@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.1.0
+# Version: 1.1.1
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 UPDATED="2026-09-30"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -205,6 +205,16 @@ get_link_speed()
     fi
 }
 
+get_vswitch_name()
+{
+    local bridge="$1"
+
+    if [[ "${bridge}" =~ ^vmbr([0-9]+)$ ]]; then
+        echo "vSwitch${BASH_REMATCH[1]}"
+    else
+        echo "${bridge}"
+    fi
+}
 show_nics()
 {
     local index=1 nic state speed
@@ -270,20 +280,20 @@ select_bridge()
     done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
 
     echo "============================================================"
-    echo " 虛擬交換器（vSwitch / Linux Bridge）"
+    echo " Virtual Switch"
     echo "============================================================"
     echo ""
 
     if ((${#bridges[@]} > 0)); then
         local i=1
         for bridge in "${bridges[@]}"; do
-            printf "  %2d) 使用現有 %-12s\n" "$i" "$bridge"
+            printf "  %2d) %-12s  PVE：%s\n" "$i" "$(get_vswitch_name "${bridge}")" "${bridge}"
             i=$((i + 1))
         done
     fi
 
     local new_index=$(( ${#bridges[@]} + 1 ))
-    printf "  %2d) 建立新的 vmbr\n" "${new_index}"
+    printf "  %2d) 建立新的 Virtual Switch  (PVE：vmbrX)\n" "${new_index}"
     echo "  0) 返回"
 
     while true; do
@@ -611,8 +621,8 @@ vss_create()
     echo " VSS 管理 - 建立 Virtual Switch"
     echo "============================================================"
     echo ""
-    echo "VMware 模型：先建立 vSwitch，再另外設定 Uplink。"
-    echo "PVE 對應：VSS = Linux Bridge（vmbrX）。"
+    echo "VMware 模型：先建立 Virtual Switch，再另外設定 Physical Uplink。"
+    echo "PVE 對應：Virtual Switch = Linux Bridge（vmbrX）。"
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
@@ -637,16 +647,17 @@ vss_create()
 
     echo ""
     echo "------------------------------------------------------------"
-    echo " VSS 建立確認"
+    echo " Virtual Switch 建立確認"
     echo "------------------------------------------------------------"
-    echo " VSS / vSwitch ：${bridge}"
-    echo " Uplink         ：稍後由「VSS Uplink 管理」設定"
-    echo " Port Group     ：稍後由「Port Group 管理」建立"
+    echo " Virtual Switch ：$(get_vswitch_name "${bridge}")"
+    echo " PVE Bridge     ：${bridge}"
+    echo " Physical Uplink：稍後設定"
+    echo " Port Group     ：稍後建立"
     echo " VMkernel       ：沿用現有管理介面，另行管理"
     echo "------------------------------------------------------------"
     echo ""
 
-    if ! confirm "確認建立 / 註冊 VSS ${bridge}？"; then
+    if ! confirm "確認建立 / 註冊 Virtual Switch $(get_vswitch_name "${bridge}")？"; then
         log_info "已取消。"
         pause_screen
         return 0
@@ -655,8 +666,11 @@ vss_create()
     ensure_dirs
 
     if [[ -e "/sys/class/net/${bridge}" ]]; then
+        remove_state_entry "VSS" "nic1"
+        remove_state_entry "VSS" "nic2"
+        remove_state_entry "VSS" "bond_mode"
         save_state "VSS" "bridge" "${bridge}"
-        log_ok "VSS ${bridge} 已建立 / 註冊。"
+        log_ok "Virtual Switch $(get_vswitch_name "${bridge}") 已建立 / 註冊。"
         echo "注意：本步驟不選 NIC、不建立 Bond、不變更 Uplink。"
         echo "下一步請使用「VSS Uplink 管理」設定 nic2 / nic3。"
         pause_screen
@@ -704,11 +718,11 @@ vss_uplink_add()
 {
     show_header
     echo "============================================================"
-    echo " VSS Uplink 管理 - 新增 / 設定 Uplink"
+    echo " Physical Uplink 管理 - 新增 / 設定 Uplink"
     echo "============================================================"
     echo ""
-    echo "VMware 模型：vSwitch 建立後，再指定 Physical Uplink。"
-    echo "PVE 對應：nic → bond（可選）→ vmbr。"
+    echo "VMware 模型：Virtual Switch 建立後，再指定 Physical Uplink。"
+    echo "PVE 對應：Physical NIC → Bond（可選）→ Linux Bridge。"
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
@@ -731,10 +745,11 @@ vss_uplink_add()
         return 0
     fi
 
-    echo "選擇 VSS / vSwitch："
+    echo "選擇 Virtual Switch："
+    echo "（VMware 名稱為主，PVE Bridge 為註解）"
     local i=1
     for bridge in "${bridges[@]}"; do
-        printf "  %2d) %s\n" "${i}" "${bridge}"
+        printf "  %2d) %-12s  PVE：%s\n" "${i}" "$(get_vswitch_name "${bridge}")" "${bridge}"
         i=$((i + 1))
     done
     while true; do
@@ -747,7 +762,7 @@ vss_uplink_add()
     done
 
     show_nics
-    select_nic "請選擇第一張 Uplink NIC"
+    select_nic "請選擇第一張 Physical NIC"
     local first_nic="${SELECTED_NIC}"
 
     select_bond_mode
@@ -766,17 +781,18 @@ vss_uplink_add()
 
     echo ""
     echo "------------------------------------------------------------"
-    echo " VSS Uplink 確認"
+    echo " Physical Uplink 確認"
     echo "------------------------------------------------------------"
-    echo " VSS / vSwitch ：${bridge}"
-    echo " Uplink 1      ：${first_nic}"
-    echo " Uplink 2      ：${second_nic:-未使用}"
-    echo " Bond 模式     ：${BOND_MODE:-不使用 Bond}"
-    echo " 管理 IP       ：${CURRENT_IP:-未偵測}"
+    echo " Virtual Switch：$(get_vswitch_name "${bridge}")"
+    echo " PVE Bridge    ：${bridge}"
+    echo " Physical NIC 1：${first_nic}"
+    echo " Physical NIC 2：${second_nic:-未使用}"
+    echo " NIC Teaming    ：${BOND_MODE:-不使用 Bond}"
+    echo " VMkernel IP   ：${CURRENT_IP:-未偵測}"
     echo " Gateway       ：${CURRENT_GW:-未偵測}"
     echo "------------------------------------------------------------"
     echo ""
-    echo "注意：本步驟才會建立 / 調整 bond0 與 vmbr Uplink。"
+    echo "PVE 實作：Physical NIC → Bond（可選）→ Linux Bridge。"
     echo ""
 
     if ! confirm "確認套用 VSS Uplink？"; then
@@ -819,8 +835,9 @@ vss_uplink_add()
     save_state "VSS" "bond_mode" "${BOND_MODE:-none}"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.vss"
 
-    log_ok "VSS Uplink 設定生效完成。"
-    echo "VSS ${bridge} 現已具備 Uplink。"
+    log_ok "Physical Uplink 設定生效完成。"
+    echo "Virtual Switch $(get_vswitch_name "${bridge}") 現已具備 Physical Uplink。"
+    echo "PVE Bridge：${bridge}"
     pause_screen
 }
 
@@ -916,12 +933,12 @@ vss_setup()
     while true; do
         show_header
         echo "============================================================"
-        echo " VSS / vSwitch"
+        echo " Virtual Switch"
         echo "============================================================"
         echo ""
-        echo "  1) VSS 管理"
-        echo "  2) Uplink 管理"
-        echo "  3) 查看 VSS"
+        echo "  1) Virtual Switch 管理"
+        echo "  2) Physical Uplink 管理"
+        echo "  3) 查看 Virtual Switch"
         echo "  0) 返回"
         echo ""
         local choice
@@ -1129,11 +1146,11 @@ vds_setup()
 port_group_list_vss()
 {
     echo "============================================================"
-    echo " VSS Port Group"
+    echo " Port Group"
     echo "============================================================"
     echo ""
-    echo "VSS Port Group = Linux Bridge + VLAN ID。"
-    echo "不建立 SDN VNet，VM 使用 vmbr + VLAN Tag 對應。"
+    echo "VMware 模型：Port Group = 名稱 + VLAN ID + Virtual Switch。"
+    echo "PVE 對應：Linux Bridge + VLAN Tag；不建立 SDN VNet。"
     echo ""
 
     local found=0
@@ -1200,7 +1217,8 @@ vss_port_group_create()
         return 0
     fi
 
-    echo "選擇 VSS / Linux Bridge："
+    echo "選擇 Virtual Switch："
+    echo "（VMware 名稱為主，PVE Bridge 為註解）"
     local i=1
     for bridge in "${bridges[@]}"; do
         printf "  %2d) %s\n" "${i}" "${bridge}"
@@ -1237,9 +1255,10 @@ vss_port_group_create()
     echo "------------------------------------------------------------"
     echo " VSS Port Group 確認"
     echo "------------------------------------------------------------"
-    echo " 名稱   ：${vnet}"
+    echo " Port Group    ：${vnet}"
     echo " VLAN ID：${vlan}"
-    echo " Bridge ：${bridge}"
+    echo " Virtual Switch：$(get_vswitch_name "${bridge}")"
+    echo " PVE Bridge    ：${bridge}"
     echo "------------------------------------------------------------"
     echo ""
 
@@ -1251,10 +1270,10 @@ vss_port_group_create()
     save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
     save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
 
-    log_ok "VSS Port Group 建立完成：${vnet} / VLAN ${vlan} / ${bridge}"
+    log_ok "Port Group 建立完成：${vnet} / VLAN ${vlan}"
     echo ""
-    echo "注意：VSS Port Group 不建立 SDN VNet。"
-    echo "VM 使用 ${bridge}，並以 VLAN Tag ${vlan} 對應此 Port Group。"
+    echo "注意：此為 VMware Standard Virtual Switch Port Group，不建立 SDN VNet。"
+    echo "VM 以 Port Group 對應的 VLAN Tag 使用網路。"
     pause_screen
 }
 
