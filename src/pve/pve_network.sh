@@ -50,7 +50,7 @@ show_header()
     echo -e "  作者: sungshu"
     echo -e "  GitHub: https://github.com/sungshu"
     echo -e "  專案: https://github.com/sungshu/Pve-Toolkits"
-    echo -e "  ${GREEN}目前版本: ${SCRIPT_VERSION}${NC} | ${CYAN}GitHub 最新版本: ${LATEST_VERSION:-未檢查}${NC} (${UPDATE_STATUS})"
+    echo -e "  目前版本: ${CYAN}${SCRIPT_VERSION}${NC} | GitHub 最新版本: ${CYAN}${LATEST_VERSION:-未檢查}${NC} (${UPDATE_STATUS})"
     echo -e "════════════════════════════════════════════════════════════════════════════════════════════"
     echo ""
 }
@@ -1073,9 +1073,9 @@ show_current_network()
     echo "PVE 節點：$(get_node_name)"
     echo "PVE 版本：$(get_pve_version)"
     if cluster_quorate && cluster_joined; then
-        echo -e "Cluster  ：${GREEN}$(cluster_status_text)${NC}"
+        echo -e "${GREEN}Cluster  ：$(cluster_status_text)${NC}"
     else
-        echo -e "Cluster  ：${RED}$(cluster_status_text)${NC}"
+        echo -e "${RED}Cluster  ：$(cluster_status_text)${NC}"
     fi
     echo ""
 
