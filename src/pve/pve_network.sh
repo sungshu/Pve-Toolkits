@@ -523,56 +523,126 @@ write_vss_interfaces()
     local nic1="$2"
     local nic2="$3"
     local bond_mode="$4"
-    local bond_name="bond0"
+    local bond_name=""
+    local bridge_port="${nic1}"
     local temp
 
-    get_management_info
+    ensure_dirs
+    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+
+    if [[ -n "${bond_mode}" ]]; then
+        bond_name="$(awk '/^auto bond[0-9]+$/ {print $2; exit}' /etc/network/interfaces 2>/dev/null || true)"
+        [[ -n "${bond_name}" ]] || bond_name="bond0"
+        bridge_port="${bond_name}"
+    fi
 
     temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+    awk -v bridge="${bridge}" -v bond="${bond_name}" '
+        BEGIN { RS=""; ORS="\n\n" }
+        {
+            keep=1
+            if ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)") keep=0
+            if (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") keep=0
+            if (keep) print
+        }
+    ' "${NATIVE_STAGING_FILE}" > "${temp}"
 
     {
-        echo "auto lo"
-        echo "iface lo inet loopback"
-        echo ""
-        echo "iface ${nic1} inet manual"
-        if [[ -n "${nic2}" ]]; then
-            echo ""
-            echo "iface ${nic2} inet manual"
-        fi
-        echo ""
-
-        if [[ -n "${bond_mode}" ]]; then
-            echo "auto ${bond_name}"
-            echo "iface ${bond_name} inet manual"
-            echo "    bond-slaves ${nic1}${nic2:+ ${nic2}}"
-            echo "    bond-miimon 100"
-            echo "    bond-mode ${bond_mode}"
-            if [[ "${bond_mode}" == "active-backup" ]]; then
-                echo "    bond-primary ${nic1}"
-            fi
-            echo ""
-            local bridge_port="${bond_name}"
-        else
-            local bridge_port="${nic1}"
-        fi
-
         echo "auto ${bridge}"
-        if [[ -n "${CURRENT_IP}" ]]; then
-            echo "iface ${bridge} inet static"
-            echo "    address ${CURRENT_IP}"
-            [[ -n "${CURRENT_GW}" ]] && echo "    gateway ${CURRENT_GW}"
-        else
-            echo "iface ${bridge} inet manual"
-        fi
+        echo "iface ${bridge} inet manual"
         echo "    bridge-ports ${bridge_port}"
         echo "    bridge-stp off"
         echo "    bridge-fd 0"
         echo "    bridge-vlan-aware yes"
         echo "    bridge-vids 2-4094"
-    } > "${temp}"
+        if [[ -n "${bond_mode}" ]]; then
+            echo ""
+            echo "auto ${bond_name}"
+            echo "iface ${bond_name} inet manual"
+            echo "    bond-slaves ${nic1} ${nic2}"
+            echo "    bond-miimon 100"
+            echo "    bond-mode ${bond_mode}"
+            [[ "${bond_mode}" == "active-backup" ]] && echo "    bond-primary ${nic1}"
+        fi
+    } >> "${temp}"
 
-    install -m 0644 "${temp}" /etc/network/interfaces
+    install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
     rm -f "${temp}"
+}
+
+create_change_id()
+{
+    printf 'CHG-%s' "$(date '+%Y%m%d-%H%M%S')"
+}
+
+create_change_backup()
+{
+    local change_id="$1"
+    local target="${BACKUP_DIR}/${change_id}"
+    ensure_dirs
+    mkdir -p "${target}"
+    cp -a /etc/network/interfaces "${target}/interfaces"
+    [[ -f "${NATIVE_STAGING_FILE}" ]] && cp -a "${NATIVE_STAGING_FILE}" "${target}/interfaces.new"
+    ip -details address show > "${target}/ip-address"
+    ip route show table all > "${target}/ip-route"
+    ip -details link show > "${target}/ip-link"
+    pvecm status > "${target}/cluster-status" 2>&1 || true
+}
+
+write_change_plan()
+{
+    local change_id="$1"
+    local plan="${PLAN_DIR}/${change_id}"
+    mkdir -p "${plan}"
+    cp -a /etc/network/interfaces "${plan}/current"
+    [[ -f "${NATIVE_STAGING_FILE}" ]] && cp -a "${NATIVE_STAGING_FILE}" "${plan}/proposed"
+    [[ -f "${plan}/proposed" ]] && diff -u "${plan}/current" "${plan}/proposed" > "${plan}/diff" || true
+}
+
+validate_proposed_interfaces()
+{
+    [[ -f "${NATIVE_STAGING_FILE}" ]] || {
+        log_error "找不到 Proposed Configuration：${NATIVE_STAGING_FILE}"
+        return 1
+    }
+    if command -v ifquery >/dev/null 2>&1; then
+        if ! ifquery --list -i "${NATIVE_STAGING_FILE}" >/dev/null 2>&1; then
+            log_error "Proposed Configuration 語法驗證失敗。"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+restore_change_backup()
+{
+    local change_id="$1"
+    local source="${BACKUP_DIR}/${change_id}/interfaces"
+    [[ -f "${source}" ]] || { log_error "找不到 Recovery Backup：${source}"; return 1; }
+    install -m 0644 "${source}" /etc/network/interfaces
+    if ! ifreload -a; then
+        log_error "Recovery Apply 失敗。"
+        return 1
+    fi
+    mkdir -p "${RECOVERY_DIR}/${change_id}"
+    cp -a "${source}" "${RECOVERY_DIR}/${change_id}/interfaces.restored"
+}
+
+apply_proposed_interfaces()
+{
+    local change_id="$1"
+    validate_proposed_interfaces || return 1
+    create_change_backup "${change_id}"
+    write_change_plan "${change_id}"
+    log_step "Apply Proposed Configuration：${change_id}"
+    install -m 0644 "${NATIVE_STAGING_FILE}" /etc/network/interfaces
+    if ! ifreload -a; then
+        log_error "Apply 失敗，開始 Recovery：${change_id}"
+        restore_change_backup "${change_id}" || true
+        return 1
+    fi
+    mkdir -p "${CHANGE_DIR}/${change_id}"
+    printf 'CHANGE_ID=%s\nTIMESTAMP=%s\nSTATUS=APPLIED\n' "${change_id}" "$(date '+%Y-%m-%d %H:%M:%S %z')" > "${CHANGE_DIR}/${change_id}/transaction"
 }
 
 validate_interfaces_syntax()
@@ -589,6 +659,7 @@ save_state()
     local key="$2"
     local value="$3"
     ensure_dirs
+    remove_state_entry "${type}" "${key}" 2>/dev/null || true
     printf '%s\t%s\t%s\n' "${type}" "${key}" "${value}" >> "${STATE_FILE}"
 }
 
@@ -666,12 +737,10 @@ validate_network_after_change()
 
 apply_interfaces()
 {
-    log_step "套用 /etc/network/interfaces"
-    if ! validate_interfaces_syntax; then
-        log_error "網路設定語法檢查失敗。"
-        return 1
-    fi
-    ifreload -a
+    local change_id
+    change_id="$(create_change_id)"
+    [[ -f "${NATIVE_STAGING_FILE}" ]] || { log_error "找不到 Proposed Configuration。"; return 1; }
+    apply_proposed_interfaces "${change_id}"
 }
 
 vss_create()
@@ -741,7 +810,9 @@ vss_create()
     save_interfaces_copy "${VSS_DIR}/interfaces.before"
     network_snapshot "${VSS_DIR}/network.before"
 
-    cat >> /etc/network/interfaces <<EOF
+    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+
+    cat >> "${NATIVE_STAGING_FILE}" <<EOF
 
 auto ${bridge}
 iface ${bridge} inet manual
