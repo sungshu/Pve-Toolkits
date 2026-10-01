@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.8
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.9"
+SCRIPT_VERSION="2.0.10"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -526,7 +526,6 @@ write_vss_interfaces()
     local temp
 
     ensure_dirs
-    local generated_file
     GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     local generated_file="${GENERATED_INTERFACES_FILE}"
     cp -a /etc/network/interfaces "${generated_file}"
@@ -946,6 +945,8 @@ vss_uplink_add()
     network_snapshot "${VSS_DIR}/network.before-uplink"
 
     if ! write_vss_interfaces "${bridge}" "${first_nic}" "${second_nic}" "${BOND_MODE}"; then
+        rm -f "${GENERATED_INTERFACES_FILE:-}"
+        GENERATED_INTERFACES_FILE=""
         log_error "VSS Uplink 設定檔建立失敗。"
         pause_screen
         return 1
@@ -960,7 +961,8 @@ vss_uplink_add()
         pause_screen
         return 1
     fi
-    rm -f "${generated_file}"
+    rm -f "${GENERATED_INTERFACES_FILE}"
+    GENERATED_INTERFACES_FILE=""
 
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS Uplink 驗證失敗。"
