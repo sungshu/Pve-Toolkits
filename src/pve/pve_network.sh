@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.1
+# Version: 2.0.2
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.0.2"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1312,7 +1312,7 @@ port_group_list_vss()
     echo "============================================================"
     echo ""
     echo "VMware 模型：Port Group = 名稱 + VLAN ID + Virtual Switch。"
-    echo "PVE 對應：Linux Bridge + VLAN Tag；不建立 SDN VNet。"
+    echo "PVE 實作：VLAN Sub-interface + Linux Bridge；不建立 SDN VNet。"
     echo ""
 
     local found=0
@@ -1390,23 +1390,20 @@ vss_port_group_create()
 
     while true; do
         read -r -p "請選擇：" choice
-        if [[ "${choice}" == "0" ]]; then
-            pause_screen
-            return 0
-        fi
+        if [[ "${choice}" == "0" ]]; then pause_screen; return 0; fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#bridges[@]})); then
             bridge="${bridges[$((choice - 1))]}"
             break
         fi
-        log_error "選擇無效。"
+        log_error "選擇無效，請輸入上方數字。"
     done
 
-    local vnet vlan
+    local vnet vlan vlan_dev
     while true; do
         read -r -p "Port Group 名稱：" vnet
         [[ "${vnet}" =~ ^[A-Za-z0-9_-]+$ ]] || { log_error "名稱只能使用英數、底線、連字號。"; continue; }
-        if awk -F '\t' -v n="${vnet}" '$1=="VSS_PORT_GROUP" && $2==n {found=1} END{exit !found}' "${STATE_FILE}" 2>/dev/null; then
-            log_error "VSS Port Group ${vnet} 已存在。"
+        if state_has "VSS_PORT_GROUP" "${vnet}" || ip link show "${vnet}" >/dev/null 2>&1; then
+            log_error "VSS Port Group / PVE Bridge ${vnet} 已存在。"
             continue
         fi
         break
@@ -1414,33 +1411,63 @@ vss_port_group_create()
 
     while true; do
         read -r -p "VLAN ID：" vlan
-        valid_vlan_id "${vlan}" && break
-        log_error "VLAN ID 必須為 1～4094。"
+        valid_vlan_id "${vlan}" || { log_error "VLAN ID 必須為 1～4094。"; continue; }
+        vlan_dev="${bridge}.${vlan}"
+        if ip link show "${vlan_dev}" >/dev/null 2>&1 || grep -qE "^auto[[:space:]]+${vlan_dev}([[:space:]]|$)" /etc/network/interfaces; then
+            log_error "VLAN 子介面已存在：${vlan_dev}"
+            continue
+        fi
+        break
     done
 
     echo ""
     echo "------------------------------------------------------------"
     echo " VSS Port Group 確認"
     echo "------------------------------------------------------------"
-    echo " Port Group    ：${vnet}"
-    echo " VLAN ID：${vlan}"
-    echo " Virtual Switch：$(get_vswitch_name "${bridge}")"
-    echo " PVE Bridge    ：${bridge}"
+    echo " Port Group     ：${vnet}"
+    echo " VLAN ID        ：${vlan}"
+    echo " VLAN Interface ：${vlan_dev}"
+    echo " Virtual Switch ：$(get_vswitch_name "${bridge}")"
+    echo " PVE Bridge     ：${bridge}"
     echo "------------------------------------------------------------"
     echo ""
 
-    if ! confirm "確認建立？"; then
+    if ! confirm "確認建立？"; then pause_screen; return 0; fi
+
+    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+
+    cat >> "${NATIVE_STAGING_FILE}" <<EOF
+
+auto ${vlan_dev}
+iface ${vlan_dev} inet manual
+
+auto ${vnet}
+iface ${vnet} inet manual
+    bridge-ports ${vlan_dev}
+    bridge-stp off
+    bridge-fd 0
+EOF
+
+    local change_id
+    change_id="$(create_change_id)"
+    if ! apply_proposed_interfaces "${change_id}"; then
+        log_error "VSS Port Group ${vnet} 建立失敗，已嘗試 Recovery。"
         pause_screen
-        return 0
+        return 1
     fi
 
     save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
     save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
+    save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"
 
     log_ok "Port Group 建立完成：${vnet} / VLAN ${vlan}"
     echo ""
-    echo "注意：此為 VMware Standard Virtual Switch Port Group，不建立 SDN VNet。"
-    echo "VM 以 Port Group 對應的 VLAN Tag 使用網路。"
+    echo "PVE 實際網路物件已建立："
+    echo "  VLAN Interface：${vlan_dev}"
+    echo "  Bridge / Port Group：${vnet}"
+    echo "  Virtual Switch：$(get_vswitch_name "${bridge}")"
+    echo ""
+    echo "VM 可直接使用 PVE Bridge：${vnet}"
     pause_screen
 }
 
@@ -1456,14 +1483,12 @@ vss_port_group_delete()
     echo " VSS Port Group 刪除"
     echo "============================================================"
     echo ""
-    echo "只允許刪除本工具建立的 VSS Port Group。"
+    echo "刪除會實際移除 /etc/network/interfaces 中的 VLAN Interface 與 Port Group Bridge。"
     echo ""
 
     local -a names=()
     local name choice
-    while read -r name; do
-        [[ -n "${name}" ]] && names+=("${name}")
-    done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+    while read -r name; do [[ -n "${name}" ]] && names+=("${name}"); done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
     if (("${#names[@]}" == 0)); then
         echo "沒有本工具建立的 VSS Port Group。"
@@ -1473,7 +1498,10 @@ vss_port_group_delete()
 
     local i=1
     for name in "${names[@]}"; do
-        printf "  %2d) %s\n" "${i}" "${name}"
+        local vlan bridge
+        vlan="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        printf "  %2d) %-20s VLAN=%-5s Bridge=%s\n" "${i}" "${name}" "${vlan:-未知}" "${bridge:-未知}"
         i=$((i + 1))
     done
     echo "  0) 返回"
@@ -1488,13 +1516,47 @@ vss_port_group_delete()
         log_error "選擇無效。"
     done
 
-    if ! confirm "確認刪除 VSS Port Group ${name}？"; then
+    local vlan bridge vlan_dev
+    vlan="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+    bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+    vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
+    [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
+
+    [[ -n "${bridge}" && -n "${vlan}" ]] || {
+        log_error "Port Group ${name} 的 State 不完整，無法安全刪除。"
         pause_screen
-        return 0
+        return 1
+    }
+
+    if ! confirm "確認刪除 VSS Port Group ${name}？"; then pause_screen; return 0; fi
+
+    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+    local temp
+    temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+    awk -v vlan_dev="${vlan_dev}" -v pg="${name}" '
+        BEGIN { RS=""; ORS="\n\n" }
+        {
+            keep=1
+            if ($0 ~ "(^|\n)auto[[:space:]]+" vlan_dev "[[:space:]]*(\n|$)") keep=0
+            if ($0 ~ "(^|\n)auto[[:space:]]+" pg "[[:space:]]*(\n|$)") keep=0
+            if (keep) print
+        }
+    ' "${NATIVE_STAGING_FILE}" > "${temp}"
+    install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+    rm -f "${temp}"
+
+    local change_id
+    change_id="$(create_change_id)"
+    if ! apply_proposed_interfaces "${change_id}"; then
+        log_error "VSS Port Group ${name} 刪除失敗，已嘗試 Recovery。"
+        pause_screen
+        return 1
     fi
 
     remove_state_entry "VSS_PORT_GROUP" "${name}"
     remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${name}"
+    remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${name}"
+
     log_ok "VSS Port Group ${name} 已刪除。"
     pause_screen
 }
