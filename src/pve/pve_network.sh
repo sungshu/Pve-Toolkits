@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.10
+# Version: 2.0.11
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.10"
+SCRIPT_VERSION="2.0.11"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -458,6 +458,30 @@ baseline_exists()
        -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
 
+network_backup_exists()
+{
+    baseline_exists && return 0
+    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_network_backup()
+{
+    if network_backup_exists; then
+        return 0
+    fi
+
+    echo ""
+    echo "尚未建立網路 Backup。"
+    if ! confirm "是否現在建立 Backup？"; then
+        log_info "未建立 Backup，取消此次網路變更。"
+        pause_screen
+        return 1
+    fi
+
+    create_baseline
+    network_backup_exists
+}
+
 create_baseline()
 {
     ensure_dirs
@@ -754,16 +778,8 @@ vss_create()
 
     cluster_guard || { pause_screen; return 0; }
 
-    if ! baseline_exists; then
-        echo "尚未建立 Baseline。"
-        if confirm "現在建立 Baseline？"; then
-            create_baseline
-        else
-            log_error "VSS 設定前必須先建立 Baseline。"
-            pause_screen
-            return 0
-        fi
-    fi
+    if ! ensure_network_backup; then return 0; fi
+
 
     if ! select_bridge; then
         pause_screen
@@ -860,11 +876,7 @@ vss_uplink_add()
 
     cluster_guard || { pause_screen; return 0; }
 
-    if ! baseline_exists; then
-        log_error "尚未建立 Baseline，停止 Uplink 變更。"
-        pause_screen
-        return 0
-    fi
+    if ! ensure_network_backup; then return 0; fi
 
     local -a bridges=()
     local bridge choice
@@ -1080,20 +1092,22 @@ vss_setup()
     while true; do
         show_header
         echo "============================================================"
-        echo " Virtual Switch"
+        echo " Virtual Switch / VSS"
         echo "============================================================"
         echo ""
-        echo "  1) Virtual Switch 管理"
-        echo "  2) Physical Uplink 管理"
-        echo "  3) 查看 Virtual Switch"
+        echo "  1) Physical Uplink"
+        echo "  2) Port Group"
+        echo "  3) VMkernel Adapter / Management"
+        echo "  4) 查看"
         echo "  0) 返回"
         echo ""
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_manage_menu ;;
-            2) vss_uplink_menu ;;
-            3) vss_show ;;
+            1) vss_uplink_add ;;
+            2) vss_port_group_menu ;;
+            3) vss_vmkernel_menu ;;
+            4) vss_show; pause_screen ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
@@ -1236,7 +1250,7 @@ port_group_exists_sdn()
     pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1
 }
 
-vds_setup()
+vds_configure()
 {
     show_header
     echo "============================================================"
@@ -1247,16 +1261,8 @@ vds_setup()
 
     cluster_guard || { pause_screen; return 0; }
 
-    if ! baseline_exists; then
-        echo "尚未建立 Baseline。"
-        if confirm "現在建立 Baseline？"; then
-            create_baseline
-        else
-            log_error "VDS 設定前必須先建立 Baseline。"
-            pause_screen
-            return 0
-        fi
-    fi
+    if ! ensure_network_backup; then return 0; fi
+
 
     select_sdn_zone || { pause_screen; return 0; }
     if ! select_sdn_bridge; then
@@ -1300,6 +1306,30 @@ vds_setup()
     pause_screen
 }
 
+vds_setup()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Distributed Virtual Switch / VDS"
+        echo "============================================================"
+        echo ""
+        echo "  1) Distributed Virtual Switch"
+        echo "  2) Port Group"
+        echo "  3) 查看"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vds_configure ;;
+            2) port_group_create ;;
+            3) show_vds_config; pause_screen ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
 
 port_group_list_vss()
 {
@@ -1362,6 +1392,8 @@ vss_port_group_create()
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
+
+    if ! ensure_network_backup; then return 0; fi
 
     local -a bridges=()
     local bridge choice
@@ -1628,66 +1660,43 @@ vds_port_group_delete()
     port_group_delete
 }
 
-port_group_platform_menu()
+vss_port_group_menu()
 {
     while true; do
         show_header
         echo "============================================================"
-        echo " Port Group 管理"
+        echo " VSS Port Group"
         echo "============================================================"
         echo ""
-        echo "  1) VSS Port Group"
-        echo "  2) VDS Port Group"
+        echo "  1) 建立"
+        echo "  2) 刪除"
+        echo "  3) 查看"
         echo "  0) 返回"
         echo ""
-
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1)
-                show_header
-                echo "============================================================"
-                echo " VSS Port Group"
-                echo "============================================================"
-                echo ""
-                echo "  1) 建立 VSS Port Group"
-                echo "  2) 刪除 VSS Port Group"
-                echo "  3) 查看 VSS Port Group"
-                echo "  0) 返回"
-                echo ""
-                read -r -p "請選擇：" choice
-                case "${choice}" in
-                    1) vss_port_group_create ;;
-                    2) vss_port_group_delete ;;
-                    3) show_header; port_group_list_vss; pause_screen ;;
-                    0) ;;
-                    *) log_error "選擇無效。"; sleep 1 ;;
-                esac
-                ;;
-            2)
-                show_header
-                echo "============================================================"
-                echo " VDS Port Group"
-                echo "============================================================"
-                echo ""
-                echo "  1) 建立 VDS Port Group"
-                echo "  2) 刪除 VDS Port Group"
-                echo "  3) 查看 VDS Port Group / VNet"
-                echo "  0) 返回"
-                echo ""
-                read -r -p "請選擇：" choice
-                case "${choice}" in
-                    1) vds_port_group_create ;;
-                    2) vds_port_group_delete ;;
-                    3) show_header; port_group_list_vds; pause_screen ;;
-                    0) ;;
-                    *) log_error "選擇無效。"; sleep 1 ;;
-                esac
-                ;;
+            1) vss_port_group_create ;;
+            2) vss_port_group_delete ;;
+            3) port_group_list_vss; pause_screen ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
     done
+}
+
+vss_vmkernel_menu()
+{
+    show_header
+    echo "============================================================"
+    echo " VMkernel Adapter / Management"
+    echo "============================================================"
+    echo ""
+    get_management_info
+    echo "  Device ：${DEV_WITH_GW:-未偵測}"
+    echo "  IP     ：${CURRENT_IP:-未偵測}"
+    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    pause_screen
 }
 
 show_current_network()
@@ -1810,6 +1819,8 @@ rollback_vss()
     fi
 
     cluster_guard || { pause_screen; return 0; }
+
+    if ! ensure_network_backup; then return 0; fi
 
     local change_id
     change_id="$(create_change_id)"
@@ -2016,9 +2027,8 @@ network_objects_menu()
         echo " Network Objects"
         echo "============================================================"
         echo ""
-        echo "  1) VSS / vSwitch"
-        echo "  2) VDS / Distributed Virtual Switch"
-        echo "  3) Port Group"
+        echo "  1) Virtual Switch / VSS"
+        echo "  2) Distributed Virtual Switch / VDS"
         echo "  0) 返回"
         echo ""
         local choice
@@ -2026,7 +2036,6 @@ network_objects_menu()
         case "${choice}" in
             1) vss_setup ;;
             2) vds_setup ;;
-            3) port_group_platform_menu ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
