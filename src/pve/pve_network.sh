@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.5
+# Version: 2.0.6
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.5"
+SCRIPT_VERSION="2.0.6"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1504,11 +1504,13 @@ vss_port_group_delete()
         printf "  %2d) %-20s VLAN=%-5s Bridge=%s\n" "${i}" "${name}" "${vlan:-未知}" "${bridge:-未知}"
         i=$((i + 1))
     done
+    echo "  A) 全部刪除"
     echo "  0) 返回"
 
     while true; do
-        read -r -p "請選擇：" choice
+        read -r -p "請選擇： " choice
         [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
+        [[ "${choice}" =~ ^[Aa]$ ]] && break
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#names[@]})); then
             name="${names[$((choice - 1))]}"
             break
@@ -1516,51 +1518,103 @@ vss_port_group_delete()
         log_error "選擇無效。"
     done
 
-    local vlan bridge vlan_dev
-    vlan="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
-    bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
-    vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
-    [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
-
-    [[ -n "${bridge}" && -n "${vlan}" ]] || {
-        log_error "Port Group ${name} 的 State 不完整，無法安全刪除。"
-        pause_screen
-        return 1
-    }
-
-    if ! confirm "確認刪除 VSS Port Group ${name}？"; then pause_screen; return 0; fi
+    local -a targets=()
+    if [[ "${choice}" =~ ^[Aa]$ ]]; then
+        targets=("${names[@]}")
+        echo ""
+        echo "即將刪除全部 ${#targets[@]} 個 VSS Port Group："
+        printf "  - %s\n" "${targets[@]}"
+        echo ""
+        if ! confirm "確認全部刪除？"; then pause_screen; return 0; fi
+    else
+        targets=("${name}")
+        local vlan bridge vlan_dev
+        vlan="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
+        [[ -n "${bridge}" && -n "${vlan}" ]] || {
+            log_error "Port Group ${name} 的 State 不完整，無法安全刪除。"
+            pause_screen
+            return 1
+        }
+        if ! confirm "確認刪除 VSS Port Group ${name}？"; then pause_screen; return 0; fi
+    fi
 
     cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
-    local temp
-    temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
-    awk -v vlan_dev="${vlan_dev}" -v pg="${name}" '
-        BEGIN { RS=""; ORS="\n\n" }
-        {
-            keep=1
-            if ($0 ~ "(^|\n)auto[[:space:]]+" vlan_dev "[[:space:]]*(\n|$)") keep=0
-            if ($0 ~ "(^|\n)auto[[:space:]]+" pg "[[:space:]]*(\n|$)") keep=0
-            if (keep) print
-        }
-    ' "${NATIVE_STAGING_FILE}" > "${temp}"
-    install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
-    rm -f "${temp}"
+    local temp target_name
+    for target_name in "${targets[@]}"; do
+        temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+        awk -v pg="${target_name}" '
+            BEGIN { RS=""; ORS="\n\n" }
+            {
+                keep=1
+                if ($0 ~ "(^|\n)auto[[:space:]]+" pg "[[:space:]]*(\n|$)") keep=0
+                if (keep) print
+            }
+        ' "${NATIVE_STAGING_FILE}" > "${temp}"
+        install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+        rm -f "${temp}"
+    done
+
+    # VLAN Interface 可能被多個 Port Group 共用；只有確認沒有其他 Tool-owned Port Group 使用時才移除。
+    local -a vlan_devs=()
+    local target_vlan_dev other_name used
+    for target_name in "${targets[@]}"; do
+        target_vlan_dev="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        if [[ -z "${target_vlan_dev}" ]]; then
+            local target_vlan target_bridge
+            target_vlan="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            target_bridge="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            target_vlan_dev="${target_bridge}.${target_vlan}"
+        fi
+        [[ -n "${target_vlan_dev}" ]] || continue
+        used=0
+        while read -r other_name; do
+            [[ -n "${other_name}" ]] || continue
+            local other_vlan_dev
+            other_vlan_dev="$(awk -F '\t' -v n="${other_name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            if [[ "${other_vlan_dev}" == "${target_vlan_dev}" ]]; then
+                used=1
+                break
+            fi
+        done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+        if ((used == 0)); then
+            temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+            awk -v vlan_dev="${target_vlan_dev}" '
+                BEGIN { RS=""; ORS="\n\n" }
+                {
+                    keep=1
+                    if ($0 ~ "(^|\n)auto[[:space:]]+" vlan_dev "[[:space:]]*(\n|$)") keep=0
+                    if (keep) print
+                }
+            ' "${NATIVE_STAGING_FILE}" > "${temp}"
+            install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+            rm -f "${temp}"
+        fi
+    done
 
     local change_id
     change_id="$(create_change_id)"
     if ! apply_proposed_interfaces "${change_id}"; then
-        log_error "VSS Port Group ${name} 刪除失敗，已嘗試 Recovery。"
+        log_error "VSS Port Group 刪除失敗，已嘗試 Recovery。"
         pause_screen
         return 1
     fi
 
-    remove_state_entry "VSS_PORT_GROUP" "${name}"
-    remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${name}"
-    remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${name}"
+    for target_name in "${targets[@]}"; do
+        remove_state_entry "VSS_PORT_GROUP" "${target_name}"
+        remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${target_name}"
+        remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${target_name}"
+    done
 
-    log_ok "VSS Port Group ${name} 已刪除。"
+    if [[ "${choice}" =~ ^[Aa]$ ]]; then
+        log_ok "全部 ${#targets[@]} 個 VSS Port Group 已刪除。"
+    else
+        log_ok "VSS Port Group ${name} 已刪除。"
+    fi
     pause_screen
 }
-
 vds_port_group_delete()
 {
     port_group_delete
