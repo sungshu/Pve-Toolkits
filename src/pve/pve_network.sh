@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.13
+# Version: 2.0.14
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.13"
+SCRIPT_VERSION="2.0.14"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1776,26 +1776,6 @@ baseline_exists()
        -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
 
-network_backup_exists()
-{
-    baseline_exists && return 0
-    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -print -quit 2>/dev/null | grep -q .
-}
-
-ensure_network_backup()
-{
-    if network_backup_exists; then return 0; fi
-    echo ""
-    echo "尚未建立網路 Backup。"
-    if ! confirm "是否現在建立 Backup？"; then
-        log_info "未建立 Backup，取消此次網路變更。"
-        pause_screen
-        return 1
-    fi
-    create_baseline
-    network_backup_exists
-}
-
 create_baseline()
 {
     ensure_dirs
@@ -2564,86 +2544,6 @@ port_group_exists_sdn()
     pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1
 }
 
-vds_configure()
-{
-    show_header
-    echo "============================================================"
-    echo " VDS 設定"
-    echo " Distributed Virtual Switch / SDN"
-    echo "============================================================"
-    echo ""
-
-    cluster_guard || { pause_screen; return 0; }
-
-    if ! ensure_network_backup; then return 0; fi
-
-
-    select_sdn_zone || { pause_screen; return 0; }
-    if ! select_sdn_bridge; then
-        pause_screen
-        return 0
-    fi
-
-    echo ""
-    echo "------------------------------------------------------------"
-    echo " VDS / SDN 設定確認"
-    echo "------------------------------------------------------------"
-    echo " SDN Zone ：${SDN_ZONE}"
-    echo " Bridge   ：${SDN_BRIDGE}"
-    echo "------------------------------------------------------------"
-    echo ""
-
-    local zone_was_created=0
-    if ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
-        if ! confirm "確認建立 SDN Zone ${SDN_ZONE}？"; then
-            pause_screen
-            return 0
-        fi
-        vds_create_zone "${SDN_ZONE}" "${SDN_BRIDGE}"
-        zone_was_created=1
-        save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"
-    else
-        log_info "使用現有 SDN Zone：${SDN_ZONE}"
-    fi
-
-    echo ""
-    echo "Port Group / VNet 可以稍後由選單建立。"
-    echo ""
-    if confirm "現在立即 Apply SDN？"; then
-        pvesh set /cluster/sdn
-        log_ok "SDN Apply 完成。"
-    fi
-
-    if ((zone_was_created == 1)); then
-        log_ok "VDS / SDN Zone 建立完成。"
-    fi
-    pause_screen
-}
-
-vds_configure()
-{
-    while true; do
-        show_header
-        echo "============================================================"
-        echo " Distributed Virtual Switch / VDS"
-        echo "============================================================"
-        echo ""
-        echo "  1) Distributed Virtual Switch"
-        echo "  2) Port Group"
-        echo "  3) 查看"
-        echo "  0) 返回"
-        echo ""
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1) vds_configure ;;
-            2) port_group_create ;;
-            3) show_vds_config; pause_screen ;;
-            0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
-        esac
-    done
-}
 vds_setup()
 {
     while true; do
@@ -3454,61 +3354,6 @@ network_objects_menu()
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
     done
-}
-
-main_menu()
-{
-    while true; do
-        show_header
-        echo "  PVE 節點：$(get_node_name)"
-        echo -e "  Cluster  ：$(cluster_status_text)"
-        echo "  PVE 版本 ：$(get_pve_version)"
-        echo ""
-        echo "------------------------------------------------------------"
-        echo ""
-        echo "  1) Network Objects"
-        echo "     ├─ Virtual Switch / VSS"
-        echo "     │  ├─ Physical Uplink"
-        echo "     │  ├─ Port Group"
-        echo "     │  └─ VMkernel Adapter / Management"
-        echo "     └─ Distributed Virtual Switch / VDS"
-        echo "        └─ Port Group"
-        echo "  2) Backup / Recovery"
-        echo "     ├─ Baseline"
-        echo "     ├─ Backup History"
-        echo "     └─ Recovery"
-        echo "  3) Network Status"
-        echo "     ├─ Current Configuration"
-        echo "     ├─ Topology"
-        echo "     ├─ Cluster"
-        echo "     └─ Connectivity"
-        echo "  0) 離開"
-        echo ""
-        echo "------------------------------------------------------------"
-        echo ""
-
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1) network_objects_menu ;;
-            2) rollback_menu ;;
-            3) show_current_network ;;
-            0)
-                echo "離開 PVE NETWORK PRO。"
-                return 0
-                ;;
-            *) log_error "選擇無效，請輸入 0～3。"; sleep 1 ;;
-        esac
-    done
-}
-
-main()
-{
-    require_root
-    check_environment
-    ensure_dirs
-    update_network_script "$@"
-    main_menu
 }
 
 main_menu()
