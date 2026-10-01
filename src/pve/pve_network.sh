@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.20
+# Version: 2.0.21
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.20"
+SCRIPT_VERSION="2.0.21"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -943,15 +943,22 @@ create_change_backup()
 restore_change_backup()
 {
     local change_id="$1"
-    local source="${BACKUP_DIR}/${change_id}/interfaces"
-    [[ -f "${source}" ]] || { log_error "找不到 Recovery Backup：${source}"; return 1; }
+    local source="${2:-${BACKUP_DIR}/${change_id}/interfaces}"
+
+    [[ -f "${source}" ]] || {
+        log_error "找不到 Recovery Source：${source}"
+        return 1
+    }
+
     install -m 0644 "${source}" /etc/network/interfaces
     if ! ifreload -a; then
         log_error "Recovery Apply 失敗。"
         return 1
     fi
+
     mkdir -p "${RECOVERY_DIR}/${change_id}"
     cp -a "${source}" "${RECOVERY_DIR}/${change_id}/interfaces.restored"
+
     if [[ -f "${BACKUP_DIR}/${change_id}/state" ]]; then
         cp -a "${BACKUP_DIR}/${change_id}/state" "${STATE_FILE}"
         cp -a "${BACKUP_DIR}/${change_id}/state" "${RECOVERY_DIR}/${change_id}/state.restored"
@@ -2524,8 +2531,9 @@ rollback_baseline()
     # 否則最後救援機制會在網路故障時被自己阻擋。
     if ! restore_change_backup "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
         log_error "Baseline Recovery 套用失敗。"
+        log_error "目前網路設定未宣告為 Recovery 成功，請檢查 /etc/network/interfaces 與 Runtime 網路狀態。"
         pause_screen
-        return 1
+        return 0
     fi
 
     if cluster_quorate; then
