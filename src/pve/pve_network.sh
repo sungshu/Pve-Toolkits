@@ -1180,6 +1180,10 @@ vss_create()
     ensure_dirs
 
     if [[ -e "/sys/class/net/${bridge}" ]]; then
+        if ! ensure_bridge_vlan_aware "${bridge}"; then
+            pause_screen
+            return 1
+        fi
         remove_state_entry "VSS" "nic1"
         remove_state_entry "VSS" "nic2"
         remove_state_entry "VSS" "bond_mode"
