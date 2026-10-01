@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 1.1.3
+# Version: 2.0.0
 # Updated: 2026-09-30
 
-SCRIPT_VERSION="1.1.3"
-UPDATED="2026-09-30"
+SCRIPT_VERSION="2.0.0"
+UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
@@ -20,12 +20,17 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_NAME="pve_network.sh"
-BASE_DIR="/etc/pve-poc"
+BASE_DIR="/etc/pve-toolkit/net"
 BASELINE_DIR="${BASE_DIR}/baseline"
-VSS_DIR="${BASE_DIR}/vss"
-VDS_DIR="${BASE_DIR}/vds"
 STATE_DIR="${BASE_DIR}/state"
+VSS_DIR="${STATE_DIR}/vss"
+VDS_DIR="${STATE_DIR}/vds"
 STATE_FILE="${STATE_DIR}/objects.conf"
+PLAN_DIR="${BASE_DIR}/plans"
+BACKUP_DIR="${BASE_DIR}/backup"
+CHANGE_DIR="${BASE_DIR}/changes"
+RECOVERY_DIR="${BASE_DIR}/recovery"
+NATIVE_STAGING_FILE="/etc/network/interfaces.new"
 
 log_info()  { echo -e "${CYAN}[ $(date '+%H:%M:%S') ] INFO${NC}  $*"; }
 log_ok()    { echo -e "${GREEN}[ $(date '+%H:%M:%S') ] OK${NC}    $*"; }
@@ -442,7 +447,7 @@ select_second_nic()
 
 ensure_dirs()
 {
-    mkdir -p "${BASELINE_DIR}" "${VSS_DIR}" "${VDS_DIR}" "${STATE_DIR}"
+    mkdir -p "${BASELINE_DIR}" "${VSS_DIR}" "${VDS_DIR}" "${STATE_DIR}" "${PLAN_DIR}" "${BACKUP_DIR}" "${CHANGE_DIR}" "${RECOVERY_DIR}"
     touch "${STATE_FILE}"
 }
 
@@ -465,7 +470,7 @@ create_baseline()
         return 0
     fi
 
-    log_step "建立 POC Baseline"
+    log_step "建立 Network Baseline"
     echo ""
     echo "Baseline 是目前系統的原始退路。"
     echo ""
@@ -491,7 +496,7 @@ create_baseline()
 show_baseline()
 {
     echo "============================================================"
-    echo " POC Baseline"
+    echo " Network Baseline"
     echo "============================================================"
     echo ""
     if baseline_exists; then
@@ -1642,7 +1647,7 @@ rollback_baseline()
 {
     show_header
     echo "============================================================"
-    echo " Rollback / 還原 - Baseline"
+    echo " Backup / Recovery - Baseline"
     echo "============================================================"
     echo ""
     echo "這是高風險操作。"
@@ -1742,7 +1747,7 @@ main_menu()
         echo "  1) VSS / vSwitch 管理（Standard Virtual Switch）"
         echo "  2) VDS 設定（Distributed Virtual Switch / SDN）"
         echo "  3) 查看目前網路設定"
-        echo "  4) Rollback / 還原"
+        echo "  4) Backup / Recovery"
         echo "  5) Baseline 管理"
         echo "  6) Port Group 管理"
         echo "  0) 離開"
