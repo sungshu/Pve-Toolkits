@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.17
+# Version: 2.0.18
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.17"
+SCRIPT_VERSION="2.0.18"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -425,46 +425,98 @@ select_bond_mode()
     echo "VMware 模型：Physical Uplink → NIC Teaming。"
     echo "PVE 實作：Linux Bond → Virtual Switch / Linux Bridge。"
     echo ""
-    echo "  1) balance-rr"
-    echo "     逐封包輪流使用成員 NIC"
-    echo "  2) active-backup"
-    echo "     一張工作，其餘備援；不需要交換器聚合"
-    echo "  3) balance-xor"
-    echo "     Hash 分配流量；交換器需配合靜態聚合"
-    echo "  4) broadcast"
-    echo "     同一封包送至所有成員 NIC"
-    echo "  5) 802.3ad / LACP"
-    echo "     動態鏈路聚合；交換器必須設定 LACP"
-    echo "  6) balance-tlb"
-    echo "     自適應傳送負載分散；不需要特殊聚合"
-    echo "  7) balance-alb"
-    echo "     自適應傳送 + IPv4 接收負載分散；不需要特殊聚合"
-    echo "  0) 不使用 Bond / 單一 NIC"
+    echo "Linux Bond 模式"
+    echo ""
+    echo "  1) balance-rr    — 逐封包輪詢"
+    echo "  2) active-backup — 主備切換"
+    echo "  3) balance-xor   — Hash 流量分配"
+    echo "  4) broadcast     — 全介面廣播傳送"
+    echo "  5) 802.3ad       — LACP 動態聚合"
+    echo "  6) balance-tlb   — 自適應傳送負載分散"
+    echo "  7) balance-alb   — 自適應傳送／IPv4 接收負載分散"
+    echo "  0) 返回"
     echo ""
 
     while true; do
-        read -r -p "請選擇：" choice
+        read -r -p "請選擇： " choice
         case "${choice}" in
-            1) BOND_MODE="balance-rr"; return 0 ;;
+            1)
+                BOND_MODE="balance-rr"
+                echo ""
+                echo "已選擇：balance-rr"
+                echo "模式說明：逐封包輪流使用不同 NIC，負載分散與備援。"
+                echo "交換器端注意：通常需設定靜態聚合。"
+                echo "另外仍需確認交換器 VLAN、Trunk 與網路連通性設定。"
+                echo ""
+                return 0
+                ;;
             2)
                 BOND_MODE="active-backup"
+                echo ""
+                echo "已選擇：active-backup"
+                echo "模式說明：一張 NIC 工作，其餘 NIC 作為備援。"
+                echo "交換器端注意：不需要聚合設定。"
+                echo "但交換器 VLAN、Trunk 與網路連通性設定仍需正確。"
+                echo ""
                 return 0
                 ;;
             3)
                 BOND_MODE="balance-xor"
+                echo ""
+                echo "已選擇：balance-xor"
+                echo "模式說明：依 Hash 分配流量，提供負載分散與備援。"
+                echo "交換器端注意：通常需設定靜態聚合。"
+                echo "另外仍需確認交換器 VLAN、Trunk 與網路連通性設定。"
+                echo ""
                 BOND_XMIT_HASH_POLICY="$(select_bond_hash_policy)"
                 return 0
                 ;;
-            4) BOND_MODE="broadcast"; return 0 ;;
+            4)
+                BOND_MODE="broadcast"
+                echo ""
+                echo "已選擇：broadcast"
+                echo "模式說明：同一封包從所有成員 NIC 送出。"
+                echo "交換器端注意：通常需設定靜態聚合。"
+                echo "另外仍需確認交換器 VLAN、Trunk 與網路連通性設定。"
+                echo ""
+                return 0
+                ;;
             5)
                 BOND_MODE="802.3ad"
+                echo ""
+                echo "已選擇：802.3ad / LACP"
+                echo "模式說明：動態鏈路聚合，依流量分配到成員 NIC。"
+                echo "交換器端注意：必須設定 LACP。"
+                echo "另外仍需確認交換器 VLAN、Trunk 與網路連通性設定。"
+                echo ""
                 BOND_LACP_RATE="$(select_lacp_rate)"
                 BOND_XMIT_HASH_POLICY="$(select_bond_hash_policy)"
                 return 0
                 ;;
-            6) BOND_MODE="balance-tlb"; return 0 ;;
-            7) BOND_MODE="balance-alb"; return 0 ;;
-            0) BOND_MODE=""; return 0 ;;
+            6)
+                BOND_MODE="balance-tlb"
+                echo ""
+                echo "已選擇：balance-tlb"
+                echo "模式說明：自適應傳送負載分散。"
+                echo "交換器端注意：不需要特殊聚合設定。"
+                echo "但交換器 VLAN、Trunk 與網路連通性設定仍需正確。"
+                echo ""
+                return 0
+                ;;
+            7)
+                BOND_MODE="balance-alb"
+                echo ""
+                echo "已選擇：balance-alb"
+                echo "模式說明：自適應傳送，加上 IPv4 接收負載分散。"
+                echo "交換器端注意：不需要特殊聚合設定。"
+                echo "但交換器 VLAN、Trunk 與網路連通性設定仍需正確。"
+                echo ""
+                return 0
+                ;;
+            0)
+                BOND_MODE=""
+                return 0
+                ;;
             *) log_error "選擇無效，請輸入 0～7。" ;;
         esac
     done
