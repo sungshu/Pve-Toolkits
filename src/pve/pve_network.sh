@@ -612,6 +612,7 @@ create_change_backup()
     ensure_dirs
     mkdir -p "${target}"
     cp -a /etc/network/interfaces "${target}/interfaces"
+    [[ -f "${STATE_FILE}" ]] && cp -a "${STATE_FILE}" "${target}/state"
     ip -details address show > "${target}/ip-address"
     ip route show table all > "${target}/ip-route"
     ip -details link show > "${target}/ip-link"
@@ -630,6 +631,10 @@ restore_change_backup()
     fi
     mkdir -p "${RECOVERY_DIR}/${change_id}"
     cp -a "${source}" "${RECOVERY_DIR}/${change_id}/interfaces.restored"
+    if [[ -f "${BACKUP_DIR}/${change_id}/state" ]]; then
+        cp -a "${BACKUP_DIR}/${change_id}/state" "${STATE_FILE}"
+        cp -a "${BACKUP_DIR}/${change_id}/state" "${RECOVERY_DIR}/${change_id}/state.restored"
+    fi
 }
 
 apply_interfaces_file()
@@ -772,6 +777,8 @@ vss_create()
 
     cluster_guard || { pause_screen; return 0; }
 
+    if ! ensure_network_backup; then return 0; fi
+
     if ! baseline_exists; then
         echo "尚未建立 Baseline。"
         if confirm "現在建立 Baseline？"; then
@@ -878,6 +885,8 @@ vss_uplink_add()
 
     cluster_guard || { pause_screen; return 0; }
 
+    if ! ensure_network_backup; then return 0; fi
+
     if ! baseline_exists; then
         log_error "尚未建立 Baseline，停止 Uplink 變更。"
         pause_screen
@@ -983,7 +992,14 @@ vss_uplink_add()
     GENERATED_INTERFACES_FILE=""
 
     if ! validate_network_after_change "${bridge}"; then
-        log_error "VSS Uplink 驗證失敗。"
+        log_error "VSS Uplink 驗證失敗，開始 Recovery。"
+        local recovery_change_id
+        recovery_change_id="$(create_change_id)"
+        if apply_interfaces_file "${recovery_change_id}" "${VSS_DIR}/interfaces.before-uplink"; then
+            log_ok "VSS Uplink 已依變更前設定完成 Recovery。"
+        else
+            log_error "VSS Uplink 自動 Recovery 套用失敗。"
+        fi
         echo "變更前設定保存於：${VSS_DIR}/interfaces.before-uplink"
         pause_screen
         return 1
@@ -1408,6 +1424,8 @@ vss_port_group_create()
 
     cluster_guard || { pause_screen; return 0; }
 
+    if ! ensure_network_backup; then return 0; fi
+
     local -a bridges=()
     local bridge choice
     while read -r bridge; do
@@ -1517,10 +1535,93 @@ EOF
     pause_screen
 }
 
+
 vds_port_group_create()
 {
-    port_group_create
+    show_header
+    echo "============================================================"
+    echo " VDS Port Group 建立"
+    echo "============================================================"
+    echo ""
+    cluster_guard || { pause_screen; return 0; }
+    if ! ensure_network_backup; then return 0; fi
+    local zone="" vnet="" tag=""
+    if ! select_sdn_zone; then pause_screen; return 0; fi
+    zone="${SDN_ZONE}"
+    while true; do
+        read -r -p "Port Group / VNet 名稱：" vnet
+        [[ "${vnet}" =~ ^[A-Za-z0-9_-]+$ ]] || { log_error "名稱只能使用英數、底線、連字號。"; continue; }
+        port_group_exists_sdn "${vnet}" && { log_error "VNet 已存在：${vnet}"; continue; }
+        break
+    done
+    while true; do
+        read -r -p "VLAN ID：" tag
+        valid_vlan_id "${tag}" || { log_error "VLAN ID 必須為 1～4094。"; continue; }
+        break
+    done
+    if ! confirm "確認建立 VDS Port Group ${vnet} / VLAN ${tag}？"; then pause_screen; return 0; fi
+    if ! vds_create_vnet "${zone}" "${vnet}" "${tag}"; then
+        log_error "VDS Port Group 建立失敗。"
+        pause_screen
+        return 1
+    fi
+    save_state "PORT_GROUP" "${vnet}" "${tag}"
+    save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"
+    pvesh set /cluster/sdn
+    log_ok "VDS Port Group 建立完成：${vnet} / VLAN ${tag}"
+    pause_screen
 }
+
+vds_port_group_delete()
+{
+    show_header
+    echo "============================================================"
+    echo " VDS Port Group 刪除"
+    echo "============================================================"
+    echo ""
+    cluster_guard || { pause_screen; return 0; }
+    if ! ensure_network_backup; then return 0; fi
+    local -a vnets=()
+    local vnet choice
+    while read -r vnet; do [[ -n "${vnet}" ]] && vnets+=("${vnet}"); done < <(awk -F '\t' '$1=="PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+    if ((${#vnets[@]} == 0)); then
+        echo "目前沒有本工具建立的 VDS Port Group。"
+        pause_screen
+        return 0
+    fi
+    local i=1
+    for vnet in "${vnets[@]}"; do
+        local tag zone
+        tag="$(awk -F '\t' -v n="${vnet}" '$1=="PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        zone="$(awk -F '\t' -v n="${vnet}" '$1=="PORT_GROUP_ZONE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+        printf "  %2d) %-20s VLAN=%-5s Zone=%s\n" "${i}" "${vnet}" "${tag:-未知}" "${zone:-未知}"
+        i=$((i + 1))
+    done
+    echo "  0) 返回"
+    while true; do
+        read -r -p "請選擇：" choice
+        [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#vnets[@]})); then
+            vnet="${vnets[$((choice - 1))]}"
+            break
+        fi
+        log_error "選擇無效。"
+    done
+    if ! confirm "確認刪除 VDS Port Group ${vnet}？"; then pause_screen; return 0; fi
+    if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+        if ! pvesh delete "/cluster/sdn/vnets/${vnet}"; then
+            log_error "VDS Port Group 刪除失敗：${vnet}"
+            pause_screen
+            return 1
+        fi
+    fi
+    remove_state_entry "PORT_GROUP" "${vnet}"
+    remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
+    pvesh set /cluster/sdn
+    log_ok "VDS Port Group 已刪除：${vnet}"
+    pause_screen
+}
+
 
 vss_port_group_delete()
 {
@@ -1622,6 +1723,11 @@ vss_port_group_delete()
         used=0
         while read -r other_name; do
             [[ -n "${other_name}" ]] || continue
+            local is_target=0
+            for target_check in "${targets[@]}"; do
+                [[ "${other_name}" == "${target_check}" ]] && { is_target=1; break; }
+            done
+            ((is_target == 1)) && continue
             local other_vlan_dev
             other_vlan_dev="$(awk -F '\t' -v n="${other_name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
             if [[ "${other_vlan_dev}" == "${target_vlan_dev}" ]]; then
@@ -1854,7 +1960,7 @@ rollback_vss()
         return 0
     fi
 
-    cluster_guard || { pause_screen; return 0; }
+    if ! ensure_network_backup; then return 0; fi
 
     local change_id
     change_id="$(create_change_id)"
@@ -1966,8 +2072,6 @@ rollback_baseline()
         pause_screen
         return 0
     fi
-
-    cluster_guard || { pause_screen; return 0; }
 
     local change_id
     change_id="$(create_change_id)"
