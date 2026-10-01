@@ -764,16 +764,6 @@ vss_create()
 
     if ! ensure_network_backup; then return 0; fi
 
-    if ! baseline_exists; then
-        echo "尚未建立 Baseline。"
-        if confirm "現在建立 Baseline？"; then
-            create_baseline
-        else
-            log_error "VSS 設定前必須先建立 Baseline。"
-            pause_screen
-            return 0
-        fi
-    fi
 
     if ! select_bridge; then
         pause_screen
@@ -872,11 +862,6 @@ vss_uplink_add()
 
     if ! ensure_network_backup; then return 0; fi
 
-    if ! baseline_exists; then
-        log_error "尚未建立 Baseline，停止 Uplink 變更。"
-        pause_screen
-        return 0
-    fi
 
     local -a bridges=()
     local bridge choice
@@ -1276,16 +1261,6 @@ vds_configure()
 
     cluster_guard || { pause_screen; return 0; }
 
-    if ! baseline_exists; then
-        echo "尚未建立 Baseline。"
-        if confirm "現在建立 Baseline？"; then
-            create_baseline
-        else
-            log_error "VDS 設定前必須先建立 Baseline。"
-            pause_screen
-            return 0
-        fi
-    fi
 
     select_sdn_zone || { pause_screen; return 0; }
     if ! select_sdn_bridge; then
