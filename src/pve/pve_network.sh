@@ -97,6 +97,10 @@ update_network_script()
     UPDATE_STATUS="無法檢查"
 
     if [[ "${NETWORK_UPDATE_GUARD}" == "1" ]]; then
+        # 第二次執行是由更新流程 exec 進來。
+        # 此時目前腳本本身就是剛從 GitHub 寫入 /root 的版本，
+        # 因此直接以 SCRIPT_VERSION 作為 GitHub 最新版本顯示。
+        LATEST_VERSION="${SCRIPT_VERSION}"
         UPDATE_STATUS="已完成更新"
         return 0
     fi
