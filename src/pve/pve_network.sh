@@ -532,7 +532,13 @@ write_vss_interfaces()
 
     if [[ -n "${bond_mode}" ]]; then
         bond_name="$(awk '/^auto bond[0-9]+$/ {print $2; exit}' /etc/network/interfaces 2>/dev/null || true)"
-        [[ -n "${bond_name}" ]] || bond_name="bond0"
+        if [[ -z "${bond_name}" ]]; then
+            local n=0
+            while grep -qE "^auto bond${n}( |$)" /etc/network/interfaces 2>/dev/null; do
+                n=$((n + 1))
+            done
+            bond_name="bond${n}"
+        fi
         bridge_port="${bond_name}"
     fi
 
@@ -1002,11 +1008,18 @@ vss_show()
     ip -br link show type bridge 2>/dev/null | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
     echo ""
     echo "Physical Uplink："
-    if [[ -f /proc/net/bonding/bond0 ]]; then
-        echo "PVE Bond：bond0"
-        grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' /proc/net/bonding/bond0 || true
-    else
-        echo "狀態：尚未設定 Physical Uplink"
+    local bond_file bond_name
+    local found_bond=0
+    for bond_file in /proc/net/bonding/*; do
+        [[ -f "${bond_file}" ]] || continue
+        bond_name="$(basename "${bond_file}")"
+        echo "PVE Bond：${bond_name}"
+        grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${bond_file}" || true
+        found_bond=1
+    done
+    if ((found_bond == 0)); then
+        echo "狀態：未偵測到 Bond，請檢查 Physical NIC Uplink"
+        ip -br link show 2>/dev/null | awk '$1 ~ /^en/ {print}' || true
     fi
     echo ""
     echo "Port Group："
