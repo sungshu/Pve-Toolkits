@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.16
+# Version: 2.0.17
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.16"
+SCRIPT_VERSION="2.0.17"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -89,6 +89,7 @@ check_environment()
     need pvecm
     need ifreload
     need hostname
+    need cmp
 
     [[ -d /etc/pve ]] || die "/etc/pve 不存在，這不是有效的 PVE 環境。"
     [[ -f /etc/network/interfaces ]] || die "/etc/network/interfaces 不存在。"
@@ -257,6 +258,18 @@ get_link_speed()
     fi
 }
 
+get_linux_bridges()
+{
+    local path bridge
+    for path in /sys/class/net/*/bridge; do
+        [[ -d "${path}" ]] || continue
+        bridge="${path%/bridge}"
+        bridge="${bridge##*/}"
+        [[ -n "${bridge}" && "${bridge}" != "lo" ]] || continue
+        echo "${bridge}"
+    done | sort -V
+}
+
 get_vswitch_name()
 {
     local bridge="$1"
@@ -342,28 +355,31 @@ select_nic()
 select_bridge()
 {
     local -a bridges=()
-    local path bridge choice
+    local bridge choice
 
     while read -r bridge; do
         [[ -n "${bridge}" ]] || continue
         bridges+=("${bridge}")
-    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+    done < <(get_linux_bridges)
 
     echo "============================================================"
     echo " Virtual Switch"
     echo "============================================================"
     echo ""
+    echo "VMware 模型：Virtual Switch = Standard vSwitch / VSS。"
+    echo "PVE 實作：Linux Bridge；名稱不強制使用 vmbrX。"
+    echo ""
 
     if ((${#bridges[@]} > 0)); then
         local i=1
         for bridge in "${bridges[@]}"; do
-            printf "  %2d) %-12s  PVE：%s\n" "$i" "$(get_vswitch_name "${bridge}")" "${bridge}"
+            printf "  %2d) %-16s  PVE：%s\n" "$i" "$(get_vswitch_name "${bridge}")" "${bridge}"
             i=$((i + 1))
         done
     fi
 
     local new_index=$(( ${#bridges[@]} + 1 ))
-    printf "  %2d) 建立新的 Virtual Switch  (PVE：vmbrX)\n" "${new_index}"
+    printf "  %2d) 建立新的 Virtual Switch\n" "${new_index}"
     echo "  0) 返回"
 
     while true; do
@@ -377,16 +393,17 @@ select_bridge()
         fi
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice == new_index)); then
             while true; do
-                read -r -p "新的 Bridge 名稱（例如 vmbr1）：" SELECTED_BRIDGE
-                if [[ "${SELECTED_BRIDGE}" =~ ^vmbr[0-9]+$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
+                read -r -p "新的 Virtual Switch 名稱：" SELECTED_BRIDGE
+                if [[ "${SELECTED_BRIDGE}" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
                     return 0
                 fi
-                log_error "Bridge 名稱必須為未使用的 vmbrX。"
+                log_error "名稱必須是 1～15 字元的合法 Linux 網路介面名稱，且目前未使用。"
             done
         fi
         log_error "選擇無效。"
     done
 }
+
 
 select_bond_mode()
 {
@@ -622,10 +639,42 @@ restore_change_backup()
     fi
 }
 
+network_pending_configuration_exists()
+{
+    [[ -f /etc/network/interfaces.new && -s /etc/network/interfaces.new ]]
+}
+
+network_pending_guard()
+{
+    if ! network_pending_configuration_exists; then
+        return 0
+    fi
+
+    echo ""
+    echo "============================================================"
+    echo " 偵測到 PVE GUI Pending Network Configuration"
+    echo "============================================================"
+    echo ""
+    echo "目前存在尚未處理的 PVE GUI 網路設定："
+    echo "  /etc/network/interfaces.new"
+    echo ""
+    echo "PVE NETWORK PRO 不會與 GUI Pending Configuration 同時修改網路。"
+    echo "請先在 PVE GUI 完成："
+    echo "  1) 套用設定"
+    echo "  或"
+    echo "  2) 取消 / 清除 Pending Configuration"
+    echo ""
+    echo "目前網路變更已停止。"
+    echo "============================================================"
+    return 1
+}
+
 apply_interfaces_file()
 {
     local change_id="$1"
     local source="$2"
+
+    network_pending_guard || return 1
 
     [[ -f "${source}" ]] || {
         log_error "找不到要套用的網路設定：${source}"
@@ -757,7 +806,7 @@ vss_create()
     echo "============================================================"
     echo ""
     echo "VMware 模型：先建立 Virtual Switch，再另外設定 Physical Uplink。"
-    echo "PVE 對應：Virtual Switch = Linux Bridge（vmbrX）。"
+    echo "PVE 對應：Virtual Switch = Linux Bridge；Bridge 名稱不強制使用 vmbrX。"
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
@@ -867,7 +916,7 @@ vss_uplink_add()
     local bridge choice
     while read -r bridge; do
         [[ -n "${bridge}" ]] && bridges+=("${bridge}")
-    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+    done < <(get_linux_bridges)
 
     if (("${#bridges[@]}" == 0)); then
         log_error "找不到 VSS / vmbr。請先建立 VSS。"
@@ -936,7 +985,7 @@ vss_uplink_add()
     echo " Gateway       ：${CURRENT_GW:-未偵測}"
     echo "------------------------------------------------------------"
     echo ""
-    echo "PVE 實作：Physical NIC → Bond（可選）→ Linux Bridge。"
+    echo "PVE 實作：Physical NIC → Bond（可選）→ Linux Bridge；Bridge 名稱不固定為 vmbrX。"
     echo ""
 
     if ! confirm "確認套用 VSS Uplink？"; then
@@ -1006,29 +1055,41 @@ vss_show()
     echo "============================================================"
     echo ""
 
-    local bridge
-    bridge="$(awk -F '\\t' '$1=="VSS" && $2=="bridge" {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+    echo "Virtual Switch / VSS："
+    echo ""
 
-    echo "VSS / vSwitch ：${bridge:-尚未由本工具建立 / 註冊}"
-    echo ""
-    echo "Linux Bridge："
-    ip -br link show type bridge 2>/dev/null | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
-    echo ""
-    echo "Physical Uplink："
-    local bond_file bond_name
-    local found_bond=0
-    for bond_file in /proc/net/bonding/*; do
-        [[ -f "${bond_file}" ]] || continue
-        bond_name="$(basename "${bond_file}")"
-        echo "PVE Bond：${bond_name}"
-        grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${bond_file}" || true
-        found_bond=1
-    done
-    if ((found_bond == 0)); then
-        echo "狀態：未偵測到 Bond，請檢查 Physical NIC Uplink"
-        ip -br link show 2>/dev/null | awk '$1 ~ /^en/ {print}' || true
-    fi
-    echo ""
+    local bridge uplink
+    while read -r bridge; do
+        [[ -n "${bridge}" ]] || continue
+        echo "  Virtual Switch：$(get_vswitch_name "${bridge}")"
+        echo "  PVE Bridge     ：${bridge}"
+        echo "  Physical Uplink："
+
+        local -a ports=()
+        if [[ -d "/sys/class/net/${bridge}/brif" ]]; then
+            while read -r uplink; do
+                [[ -n "${uplink}" ]] || continue
+                ports+=("${uplink}")
+            done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\n" 2>/dev/null | sort -V)
+        fi
+
+        if ((${#ports[@]} == 0)); then
+            echo "    狀態：尚未設定 Physical Uplink"
+        else
+            for uplink in "${ports[@]}"; do
+                if [[ -f "/proc/net/bonding/${uplink}" ]]; then
+                    echo "    ${bridge} → ${uplink}"
+                    echo "    模式：Bond"
+                    grep -E "Bonding Mode|MII Status|Currently Active Slave|Slave Interface" "/proc/net/bonding/${uplink}" | sed "s/^/      /" || true
+                else
+                    echo "    ${bridge} → ${uplink}"
+                    echo "    模式：單 NIC，未使用 Bond"
+                fi
+            done
+        fi
+        echo ""
+    done < <(get_linux_bridges)
+
     echo "Port Group："
     port_group_list_vss
     echo ""
@@ -1039,6 +1100,7 @@ vss_show()
     echo "  Gateway：${CURRENT_GW:-未偵測}"
     pause_screen
 }
+
 
 vss_vmkernel_menu()
 {
@@ -1082,7 +1144,7 @@ vss_setup()
             2) vss_uplink_add ;;
             3) vss_port_group_menu ;;
             4) vss_vmkernel_menu ;;
-            5) vss_show; pause_screen ;;
+            5) vss_show ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
@@ -1173,7 +1235,7 @@ select_sdn_bridge()
     local bridge choice
     while read -r bridge; do
         [[ -n "${bridge}" ]] && bridges+=("${bridge}")
-    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+    done < <(get_linux_bridges)
 
     ((${#bridges[@]} > 0)) || die "找不到 vmbr Bridge。請先建立 VSS / Bridge。"
 
@@ -1374,7 +1436,7 @@ vss_port_group_create()
     local bridge choice
     while read -r bridge; do
         [[ -n "${bridge}" ]] && bridges+=("${bridge}")
-    done < <(find /sys/class/net -maxdepth 1 -type l -printf '%f\n' 2>/dev/null | awk '/^vmbr[0-9]+$/ {print}' | sort -V)
+    done < <(get_linux_bridges)
 
     if (("${#bridges[@]}" == 0)); then
         log_error "找不到 vmbr Bridge。請先建立 VSS / Bridge。"
@@ -1774,7 +1836,7 @@ show_current_network()
     echo "------------------------------------------------------------"
     ip -br link show type bridge 2>/dev/null || true
     echo ""
-    ip -br addr show | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
+    ip -br addr show || true
 
     echo ""
     echo "------------------------------------------------------------"
@@ -2092,6 +2154,11 @@ main_menu()
         echo "  PVE 節點：$(get_node_name)"
         echo -e "  Cluster  ：$(cluster_status_text)"
         echo "  PVE 版本 ：$(get_pve_version)"
+    if network_pending_configuration_exists; then
+        echo -e "  GUI Pending：${YELLOW}存在 / 網路變更暫停${NC}"
+    else
+        echo "  GUI Pending：無"
+    fi
         echo ""
         echo "------------------------------------------------------------"
         echo ""
