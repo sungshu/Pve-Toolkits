@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.12
+# Version: 2.0.13
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.12"
+SCRIPT_VERSION="2.0.13"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -310,7 +310,7 @@ nic_used_elsewhere()
             if(is_target || is_target_bond) next
             if($0 ~ "(^|\\n)bridge-ports[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)") found=1
             if($0 ~ "(^|\\n)bond-slaves[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)") found=1
-            if($0 ~ "(^|\\n)iface[[:space:]]+" nic "[[:space:]]+inet[[:space:]]+(manual)") found=1
+            if($0 ~ "(^|\\n)iface[[:space:]]+" nic "[[:space:]]+inet[[:space:]]+(static|dhcp)") found=1
         }
         END{exit(found?0:1)}
     ' /etc/network/interfaces 2>/dev/null
@@ -593,7 +593,7 @@ write_vss_interfaces()
     fi
     local temp
     temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
-    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" '
+    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" -v nic1="${nic1}" -v nic2="${nic2}" -v bond_mode="${bond_mode}" '
         BEGIN { RS=""; ORS="\n\n"; bridge_found=0; bond_found=0 }
         {
             is_bridge=($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
@@ -607,10 +607,10 @@ write_vss_interfaces()
                 bond_found=1; n=split($0,a,"\n"); out=""
                 for(i=1;i<=n;i++){
                     line=a[i]
-                    if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) line="    bond-slaves ${nic1} ${nic2}"
+                    if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) line="    bond-slaves " nic1 " " nic2
                     else if(line ~ /^[[:space:]]*bond-miimon[[:space:]]+/) line="    bond-miimon 100"
-                    else if(line ~ /^[[:space:]]*bond-mode[[:space:]]+/) line="    bond-mode ${bond_mode}"
-                    else if(line ~ /^[[:space:]]*bond-primary[[:space:]]+/){ if("${bond_mode}"=="active-backup") line="    bond-primary ${nic1}"; else line="" }
+                    else if(line ~ /^[[:space:]]*bond-mode[[:space:]]+/) line="    bond-mode " bond_mode
+                    else if(line ~ /^[[:space:]]*bond-primary[[:space:]]+/){ if(bond_mode=="active-backup") line="    bond-primary " nic1; else line="" }
                     if(line!="") out=out (out==""?"":"\n") line
                 }
                 print out; next
@@ -630,10 +630,10 @@ write_vss_interfaces()
             if(bond!="" && !bond_found){
                 print "auto " bond
                 print "iface " bond " inet manual"
-                print "    bond-slaves ${nic1} ${nic2}"
+                print "    bond-slaves " nic1 " " nic2
                 print "    bond-miimon 100"
-                print "    bond-mode ${bond_mode}"
-                if("${bond_mode}"=="active-backup") print "    bond-primary ${nic1}"
+                print "    bond-mode " bond_mode
+                if(bond_mode=="active-backup") print "    bond-primary " nic1
             }
         }
     ' "${generated_file}" > "${temp}"
@@ -3454,6 +3454,61 @@ network_objects_menu()
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
     done
+}
+
+main_menu()
+{
+    while true; do
+        show_header
+        echo "  PVE 節點：$(get_node_name)"
+        echo -e "  Cluster  ：$(cluster_status_text)"
+        echo "  PVE 版本 ：$(get_pve_version)"
+        echo ""
+        echo "------------------------------------------------------------"
+        echo ""
+        echo "  1) Network Objects"
+        echo "     ├─ Virtual Switch / VSS"
+        echo "     │  ├─ Physical Uplink"
+        echo "     │  ├─ Port Group"
+        echo "     │  └─ VMkernel Adapter / Management"
+        echo "     └─ Distributed Virtual Switch / VDS"
+        echo "        └─ Port Group"
+        echo "  2) Backup / Recovery"
+        echo "     ├─ Baseline"
+        echo "     ├─ Backup History"
+        echo "     └─ Recovery"
+        echo "  3) Network Status"
+        echo "     ├─ Current Configuration"
+        echo "     ├─ Topology"
+        echo "     ├─ Cluster"
+        echo "     └─ Connectivity"
+        echo "  0) 離開"
+        echo ""
+        echo "------------------------------------------------------------"
+        echo ""
+
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) network_objects_menu ;;
+            2) rollback_menu ;;
+            3) show_current_network ;;
+            0)
+                echo "離開 PVE NETWORK PRO。"
+                return 0
+                ;;
+            *) log_error "選擇無效，請輸入 0～3。"; sleep 1 ;;
+        esac
+    done
+}
+
+main()
+{
+    require_root
+    check_environment
+    ensure_dirs
+    update_network_script "$@"
+    main_menu
 }
 
 main_menu()
