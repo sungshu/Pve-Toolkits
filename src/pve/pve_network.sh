@@ -57,7 +57,9 @@ show_header()
     echo -e "  作者: sungshu"
     echo -e "  GitHub: https://github.com/sungshu"
     echo -e "  專案: https://github.com/sungshu/Pve-Toolkits"
-    echo -e "  目前版本: ${CYAN}${SCRIPT_VERSION}${NC} | GitHub 最新版本: ${CYAN}${LATEST_VERSION:-未檢查}${NC} (${UPDATE_STATUS})"
+    echo -e "  目前版本: ${CYAN}v${SCRIPT_VERSION}${NC}"
+    echo -e "  更新日期: ${CYAN}${UPDATED}${NC}"
+    echo -e "  GitHub 版本: ${CYAN}v${LATEST_VERSION:-未檢查}${NC} | 狀態: ${UPDATE_STATUS}"
     echo -e "════════════════════════════════════════════════════════════════════════════════════════════"
     echo ""
 }
