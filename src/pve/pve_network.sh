@@ -1042,6 +1042,73 @@ validate_network_after_change()
     return 0
 }
 
+ensure_bridge_vlan_aware()
+{
+    local bridge="$1"
+    local source temp change_id
+
+    [[ -e "/sys/class/net/${bridge}/bridge" ]] || {
+        log_error "PVE Bridge 不存在：${bridge}"
+        return 1
+    }
+
+    if grep -qE "^[[:space:]]*bridge-vlan-aware[[:space:]]+yes([[:space:]]*)$" /etc/network/interfaces 2>/dev/null &&
+       grep -qE "^[[:space:]]*bridge-vids[[:space:]]+2-4094([[:space:]]*)$" /etc/network/interfaces 2>/dev/null; then
+        return 0
+    fi
+
+    source="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    cp -a /etc/network/interfaces "${source}"
+
+    awk -v bridge="${bridge}" '
+        BEGIN { RS=""; ORS="\n\n"; found=0 }
+        {
+            is_bridge = ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
+            if (is_bridge) {
+                found=1
+                n=split($0,a,"\n")
+                out=""
+                aware=0
+                vids=0
+                for(i=1;i<=n;i++) {
+                    line=a[i]
+                    if(line ~ /^[[:space:]]*bridge-vlan-aware[[:space:]]+/) {
+                        line="    bridge-vlan-aware yes"
+                        aware=1
+                    }
+                    if(line ~ /^[[:space:]]*bridge-vids[[:space:]]+/) {
+                        line="    bridge-vids 2-4094"
+                        vids=1
+                    }
+                    out=out (out=="" ? "" : "\n") line
+                }
+                if(!aware) out=out "\n    bridge-vlan-aware yes"
+                if(!vids) out=out "\n    bridge-vids 2-4094"
+                print out
+                next
+            }
+            print
+        }
+        END {
+            if(!found) exit 2
+        }
+    ' "${source}" > "${temp}" || {
+        rm -f "${source}" "${temp}"
+        log_error "無法定位 Bridge 設定：${bridge}"
+        return 1
+    }
+
+    change_id="$(create_change_id)"
+    if ! apply_interfaces_file "${change_id}" "${temp}"; then
+        rm -f "${source}" "${temp}"
+        return 1
+    fi
+
+    rm -f "${source}" "${temp}"
+    return 0
+}
+
 apply_interfaces()
 {
     local source="$1"
@@ -1164,7 +1231,6 @@ vss_uplink_add()
     cluster_guard || { pause_screen; return 0; }
 
     if ! ensure_network_backup; then return 0; fi
-
 
     local -a bridges=()
     local bridge choice
@@ -1605,6 +1671,11 @@ vds_configure()
         return 0
     fi
 
+    if ! ensure_bridge_vlan_aware "${SDN_BRIDGE}"; then
+        pause_screen
+        return 1
+    fi
+
     echo ""
     echo "------------------------------------------------------------"
     echo " VDS / SDN 設定確認"
@@ -1761,6 +1832,11 @@ vss_port_group_create()
         fi
         log_error "選擇無效，請輸入上方數字。"
     done
+
+    if ! ensure_bridge_vlan_aware "${bridge}"; then
+        pause_screen
+        return 1
+    fi
 
     local vnet vlan vlan_dev
     while true; do
