@@ -13,6 +13,10 @@ UPDATE_STATUS="尚未檢查"
 NETWORK_SCRIPT_PATH="/root/pve_network.sh"
 GENERATED_INTERFACES_FILE=""
 NETWORK_UPDATE_GUARD="${PVE_NETWORK_UPDATED:-0}"
+BOND_MODE=""
+BOND_PRIMARY_NIC=""
+BOND_XMIT_HASH_POLICY=""
+BOND_LACP_RATE=""
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -408,30 +412,103 @@ select_bridge()
 select_bond_mode()
 {
     local choice
+
+    BOND_MODE=""
+    BOND_PRIMARY_NIC=""
+    BOND_XMIT_HASH_POLICY=""
+    BOND_LACP_RATE=""
+
     echo "============================================================"
-    echo " 網卡綁定（NIC Teaming / Bond）"
+    echo " NIC Teaming / Linux Bond"
     echo "============================================================"
     echo ""
-    echo "  1) Active / Standby"
-    echo "     PVE：bond-mode active-backup"
-    echo "  2) LACP"
-    echo "     PVE：bond-mode 802.3ad"
-    echo "  3) Load Balance"
-    echo "     PVE：bond-mode balance-xor"
-    echo "  0) 不使用 Bond"
+    echo "VMware 模型：Physical Uplink → NIC Teaming。"
+    echo "PVE 實作：Linux Bond → Virtual Switch / Linux Bridge。"
+    echo ""
+    echo "  1) balance-rr"
+    echo "     逐封包輪流使用成員 NIC"
+    echo "  2) active-backup"
+    echo "     一張工作，其餘備援；不需要交換器聚合"
+    echo "  3) balance-xor"
+    echo "     Hash 分配流量；交換器需配合靜態聚合"
+    echo "  4) broadcast"
+    echo "     同一封包送至所有成員 NIC"
+    echo "  5) 802.3ad / LACP"
+    echo "     動態鏈路聚合；交換器必須設定 LACP"
+    echo "  6) balance-tlb"
+    echo "     自適應傳送負載分散；不需要特殊聚合"
+    echo "  7) balance-alb"
+    echo "     自適應傳送 + IPv4 接收負載分散；不需要特殊聚合"
+    echo "  0) 不使用 Bond / 單一 NIC"
     echo ""
 
     while true; do
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) BOND_MODE="active-backup"; return 0 ;;
-            2) BOND_MODE="802.3ad"; return 0 ;;
-            3) BOND_MODE="balance-xor"; return 0 ;;
+            1) BOND_MODE="balance-rr"; return 0 ;;
+            2)
+                BOND_MODE="active-backup"
+                read -r -p "Primary NIC 將於選擇成員後設定。"
+                return 0
+                ;;
+            3)
+                BOND_MODE="balance-xor"
+                BOND_XMIT_HASH_POLICY="$(select_bond_hash_policy)"
+                return 0
+                ;;
+            4) BOND_MODE="broadcast"; return 0 ;;
+            5)
+                BOND_MODE="802.3ad"
+                BOND_LACP_RATE="$(select_lacp_rate)"
+                BOND_XMIT_HASH_POLICY="$(select_bond_hash_policy)"
+                return 0
+                ;;
+            6) BOND_MODE="balance-tlb"; return 0 ;;
+            7) BOND_MODE="balance-alb"; return 0 ;;
             0) BOND_MODE=""; return 0 ;;
-            *) log_error "選擇無效，請輸入 0～3。" ;;
+            *) log_error "選擇無效，請輸入 0～7。" ;;
         esac
     done
 }
+
+select_bond_hash_policy()
+{
+    local choice
+    echo ""
+    echo "Xmit Hash Policy"
+    echo "  1) layer2"
+    echo "  2) layer2+3"
+    echo "  3) layer3+4"
+    echo ""
+    while true; do
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) echo "layer2"; return 0 ;;
+            2) echo "layer2+3"; return 0 ;;
+            3) echo "layer3+4"; return 0 ;;
+            *) log_error "選擇無效，請輸入 1～3。" ;;
+        esac
+    done
+}
+
+select_lacp_rate()
+{
+    local choice
+    echo ""
+    echo "LACP Rate"
+    echo "  1) slow"
+    echo "  2) fast"
+    echo ""
+    while true; do
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) echo "slow"; return 0 ;;
+            2) echo "fast"; return 0 ;;
+            *) log_error "選擇無效，請輸入 1～2。" ;;
+        esac
+    done
+}
+
 
 select_second_nic()
 {
@@ -565,28 +642,39 @@ save_interfaces_copy()
 
 write_vss_interfaces()
 {
-    local bridge="$1" nic1="$2" nic2="$3" bond_mode="$4"
-    local bond_name="" bridge_port="${nic1}"
+    local bridge="$1"
+    local nic1="$2"
+    local nic2="$3"
+    local bond_mode="$4"
+    local bond_hash="${BOND_XMIT_HASH_POLICY:-}"
+    local lacp_rate="${BOND_LACP_RATE:-}"
+    local bond_name=""
+    local bridge_port="${nic1}"
 
     ensure_dirs
     GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     local generated_file="${GENERATED_INTERFACES_FILE}"
+    local temp
+
     cp -a /etc/network/interfaces "${generated_file}"
 
-    # 第一版已驗證的 VSS 核心：Physical NIC → Bond（可選）→ Linux Bridge。
-    # 2.0.17 只把這個既有 CLI 生命週期包進 VMware 風格 UI，不另造一套底層網路模型。
+    # 第一版已驗證的核心生命週期：
+    # Physical NIC → Bond（可選）→ Linux Bridge。
+    # 2.0.17 只將既有 CLI 實作包進 VMware 風格 VSS / Physical Uplink UI。
 
     if [[ -n "${bond_mode}" ]]; then
-        bridge_port="$(awk -v bridge="${bridge}" 'BEGIN{RS=""}
-            $0 ~ "(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)" {
-                n=split($0,a,"\\n")
+        bridge_port="$(awk -v bridge="${bridge}" '
+            BEGIN { RS=""; ORS="\n\n" }
+            $0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)" {
+                n=split($0,a,"\n")
                 for(i=1;i<=n;i++)
-                    if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+/) {
+                    if(a[i] ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
                         sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i])
                         print a[i]
                         exit
                     }
-            }' "${generated_file}")"
+            }
+        ' "${generated_file}")"
 
         if [[ "${bridge_port}" =~ ^bond[0-9]+$ ]]; then
             bond_name="${bridge_port}"
@@ -600,42 +688,51 @@ write_vss_interfaces()
         fi
     fi
 
-    # Bond slave NIC 必須保留為 manual，與第一版 CLI 的寫法一致。
-    for nic in "${nic1}" "${nic2}"; do
-        [[ -n "${nic}" ]] || continue
-        if ! grep -qE "^iface[[:space:]]+${nic}[[:space:]]+inet[[:space:]]+" "${generated_file}" 2>/dev/null; then
-            printf '\nauto %s\niface %s inet manual\n' "${nic}" "${nic}" >> "${generated_file}"
-        fi
-    done
-
-    local temp
     temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
 
-    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" \
-        -v nic1="${nic1}" -v nic2="${nic2}" -v bond_mode="${bond_mode}" '
+    awk -v bridge="${bridge}" \
+        -v bridge_port="${bridge_port}" \
+        -v bond="${bond_name}" \
+        -v nic1="${nic1}" \
+        -v nic2="${nic2}" \
+        -v bond_mode="${bond_mode}" \
+        -v bond_hash="${bond_hash}" \
+        -v lacp_rate="${lacp_rate}" '
         BEGIN {
             RS=""
-            ORS="\\n\\n"
+            ORS="\n\n"
             bridge_found=0
             bond_found=0
         }
+
         {
-            is_bridge=($0 ~ "(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)")
-            is_bond=(bond!="" && $0 ~ "(^|\\n)auto[[:space:]]+" bond "[[:space:]]*(\\n|$)")
+            is_bridge = ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
+            is_bond = (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)")
 
             if (is_bridge) {
                 bridge_found=1
-                n=split($0,a,"\\n")
+                n=split($0,a,"\n")
                 out=""
                 have_ports=0
+                have_stp=0
+                have_fd=0
                 have_vlan_aware=0
                 have_vlan_vids=0
 
                 for(i=1;i<=n;i++) {
                     line=a[i]
+
                     if(line ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
                         line="    bridge-ports " bridge_port
                         have_ports=1
+                    }
+                    if(line ~ /^[[:space:]]*bridge-stp[[:space:]]+/) {
+                        line="    bridge-stp off"
+                        have_stp=1
+                    }
+                    if(line ~ /^[[:space:]]*bridge-fd[[:space:]]+/) {
+                        line="    bridge-fd 0"
+                        have_fd=1
                     }
                     if(line ~ /^[[:space:]]*bridge-vlan-aware[[:space:]]+/) {
                         line="    bridge-vlan-aware yes"
@@ -645,12 +742,15 @@ write_vss_interfaces()
                         line="    bridge-vids 2-4094"
                         have_vlan_vids=1
                     }
-                    out=out (out=="" ? "" : "\\n") line
+
+                    out=out (out=="" ? "" : "\n") line
                 }
 
-                if(!have_ports) out=out "\\n    bridge-ports " bridge_port
-                if(!have_vlan_aware) out=out "\\n    bridge-vlan-aware yes"
-                if(!have_vlan_vids) out=out "\\n    bridge-vids 2-4094"
+                if(!have_ports) out=out "\n    bridge-ports " bridge_port
+                if(!have_stp) out=out "\n    bridge-stp off"
+                if(!have_fd) out=out "\n    bridge-fd 0"
+                if(!have_vlan_aware) out=out "\n    bridge-vlan-aware yes"
+                if(!have_vlan_vids) out=out "\n    bridge-vids 2-4094"
 
                 print out
                 next
@@ -658,15 +758,18 @@ write_vss_interfaces()
 
             if (is_bond) {
                 bond_found=1
-                n=split($0,a,"\\n")
+                n=split($0,a,"\n")
                 out=""
                 have_slaves=0
                 have_miimon=0
                 have_mode=0
                 have_primary=0
+                have_hash=0
+                have_lacp=0
 
                 for(i=1;i<=n;i++) {
                     line=a[i]
+
                     if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) {
                         line="    bond-slaves " nic1 " " nic2
                         have_slaves=1
@@ -687,13 +790,32 @@ write_vss_interfaces()
                             line=""
                         }
                     }
-                    if(line!="") out=out (out=="" ? "" : "\\n") line
+                    if(line ~ /^[[:space:]]*bond-xmit-hash-policy[[:space:]]+/) {
+                        if(bond_hash!="") {
+                            line="    bond-xmit-hash-policy " bond_hash
+                            have_hash=1
+                        } else {
+                            line=""
+                        }
+                    }
+                    if(line ~ /^[[:space:]]*bond-lacp-rate[[:space:]]+/) {
+                        if(bond_mode=="802.3ad" && lacp_rate!="") {
+                            line="    bond-lacp-rate " lacp_rate
+                            have_lacp=1
+                        } else {
+                            line=""
+                        }
+                    }
+
+                    if(line!="") out=out (out=="" ? "" : "\n") line
                 }
 
-                if(!have_slaves) out=out "\\n    bond-slaves " nic1 " " nic2
-                if(!have_miimon) out=out "\\n    bond-miimon 100"
-                if(!have_mode) out=out "\\n    bond-mode " bond_mode
-                if(bond_mode=="active-backup" && !have_primary) out=out "\\n    bond-primary " nic1
+                if(!have_slaves) out=out "\n    bond-slaves " nic1 " " nic2
+                if(!have_miimon) out=out "\n    bond-miimon 100"
+                if(!have_mode) out=out "\n    bond-mode " bond_mode
+                if(bond_mode=="active-backup" && !have_primary) out=out "\n    bond-primary " nic1
+                if(bond_hash!="" && !have_hash) out=out "\n    bond-xmit-hash-policy " bond_hash
+                if(bond_mode=="802.3ad" && lacp_rate!="" && !have_lacp) out=out "\n    bond-lacp-rate " lacp_rate
 
                 print out
                 next
@@ -701,6 +823,7 @@ write_vss_interfaces()
 
             print
         }
+
         END {
             if(!bridge_found) {
                 print "auto " bridge
@@ -720,6 +843,10 @@ write_vss_interfaces()
                 print "    bond-mode " bond_mode
                 if(bond_mode=="active-backup")
                     print "    bond-primary " nic1
+                if(bond_hash!="")
+                    print "    bond-xmit-hash-policy " bond_hash
+                if(bond_mode=="802.3ad" && lacp_rate!="")
+                    print "    bond-lacp-rate " lacp_rate
             }
         }
     ' "${generated_file}" > "${temp}"
@@ -1249,6 +1376,44 @@ vss_vmkernel_menu()
     pause_screen
 }
 
+vss_physical_uplink_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Physical Uplink"
+        echo "============================================================"
+        echo ""
+        echo "VMware 模型：VSS → Physical Uplink → NIC / NIC Teaming."
+        echo "PVE 實作：NIC / Bond → Linux Bridge。"
+        echo ""
+        echo "  1) Single NIC"
+        echo "  2) NIC Teaming / Linux Bond"
+        echo "  3) 查看 Uplink"
+        echo "  0) 返回"
+        echo ""
+
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1)
+                BOND_MODE=""
+                BOND_XMIT_HASH_POLICY=""
+                BOND_LACP_RATE=""
+                vss_uplink_add
+                ;;
+            2)
+                vss_uplink_add
+                ;;
+            3)
+                vss_show
+                ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
 vss_setup()
 {
     while true; do
@@ -1268,7 +1433,7 @@ vss_setup()
         read -r -p "請選擇：" choice
         case "${choice}" in
             1) vss_create ;;
-            2) vss_uplink_add ;;
+            2) vss_physical_uplink_menu ;;
             3) vss_port_group_menu ;;
             4) vss_vmkernel_menu ;;
             5) vss_show ;;
@@ -1277,6 +1442,7 @@ vss_setup()
         esac
     done
 }
+
 
 show_vds_config()
 {
