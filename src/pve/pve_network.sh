@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.15
+# Version: 2.0.16
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.15"
+SCRIPT_VERSION="2.0.16"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1040,51 +1040,24 @@ vss_show()
     pause_screen
 }
 
-vss_manage_menu()
+vss_vmkernel_menu()
 {
-    while true; do
-        show_header
-        echo "============================================================"
-        echo " VSS 管理"
-        echo " Standard Virtual Switch"
-        echo "============================================================"
-        echo ""
-        echo "  1) 建立 / 註冊 VSS"
-        echo "  2) 查看 VSS"
-        echo "  0) 返回"
-        echo ""
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1) vss_create ;;
-            2) vss_show ;;
-            0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
-        esac
-    done
-}
+    show_header
+    echo "============================================================"
+    echo " VMkernel Adapter / Management"
+    echo "============================================================"
+    echo ""
+    echo "目前僅提供管理介面資訊檢視。"
+    echo "Management IP、Gateway 與 Cluster Network 不在此處直接修改。"
+    echo ""
 
-vss_uplink_menu()
-{
-    while true; do
-        show_header
-        echo "============================================================"
-        echo " VSS Uplink 管理"
-        echo "============================================================"
-        echo ""
-        echo "  1) 新增 / 設定 Uplink"
-        echo "  2) 查看 VSS"
-        echo "  0) 返回"
-        echo ""
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1) vss_uplink_add ;;
-            2) vss_show ;;
-            0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
-        esac
-    done
+    get_management_info
+
+    echo " Device ：${DEV_WITH_GW:-未偵測}"
+    echo " IP     ：${CURRENT_IP:-未偵測}"
+    echo " Gateway：${CURRENT_GW:-未偵測}"
+
+    pause_screen
 }
 
 vss_setup()
@@ -1095,19 +1068,21 @@ vss_setup()
         echo " Virtual Switch / VSS"
         echo "============================================================"
         echo ""
-        echo "  1) Physical Uplink"
-        echo "  2) Port Group"
-        echo "  3) VMkernel Adapter / Management"
-        echo "  4) 查看"
+        echo "  1) Virtual Switch"
+        echo "  2) Physical Uplink"
+        echo "  3) Port Group"
+        echo "  4) VMkernel Adapter / Management"
+        echo "  5) 查看"
         echo "  0) 返回"
         echo ""
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_uplink_add ;;
-            2) vss_port_group_menu ;;
-            3) vss_vmkernel_menu ;;
-            4) vss_show; pause_screen ;;
+            1) vss_create ;;
+            2) vss_uplink_add ;;
+            3) vss_port_group_menu ;;
+            4) vss_vmkernel_menu ;;
+            5) vss_show; pause_screen ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
