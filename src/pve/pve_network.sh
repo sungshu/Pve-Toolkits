@@ -549,7 +549,13 @@ write_vss_interfaces()
 
     {
         echo "auto ${bridge}"
-        echo "iface ${bridge} inet manual"
+        if [[ -n "${CURRENT_IP}" && "${DEV_WITH_GW}" == "${bridge}" ]]; then
+            echo "iface ${bridge} inet static"
+            echo "    address ${CURRENT_IP}"
+            [[ -n "${CURRENT_GW}" ]] && echo "    gateway ${CURRENT_GW}"
+        else
+            echo "iface ${bridge} inet manual"
+        fi
         echo "    bridge-ports ${bridge_port}"
         echo "    bridge-stp off"
         echo "    bridge-fd 0"
@@ -1805,6 +1811,84 @@ baseline_menu()
     done
 }
 
+network_objects_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Network Objects"
+        echo "============================================================"
+        echo ""
+        echo "  1) VSS / vSwitch"
+        echo "  2) VDS / Distributed Virtual Switch"
+        echo "  3) Port Group"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_setup ;;
+            2) vds_setup ;;
+            3) port_group_platform_menu ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+change_management_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Change Management"
+        echo "============================================================"
+        echo ""
+        echo "  1) 查看 Current / Proposed / Diff"
+        echo "  2) Dry-run / Validate"
+        echo "  3) Change History"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1)
+                echo ""
+                if [[ -f "${NATIVE_STAGING_FILE}" ]]; then
+                    echo "Current / Proposed Diff"
+                    echo "------------------------------------------------------------"
+                    diff -u /etc/network/interfaces "${NATIVE_STAGING_FILE}" || true
+                else
+                    echo "目前沒有 Proposed Configuration。"
+                fi
+                pause_screen
+                ;;
+            2)
+                echo ""
+                if validate_proposed_interfaces; then
+                    echo "Dry-run / Validate：成功"
+                else
+                    echo "Dry-run / Validate：失敗"
+                fi
+                pause_screen
+                ;;
+            3)
+                echo ""
+                echo "Change History"
+                echo "------------------------------------------------------------"
+                if [[ -d "${CHANGE_DIR}" ]]; then
+                    find "${CHANGE_DIR}" -mindepth 2 -maxdepth 2 -type f -name transaction -print 2>/dev/null | sort
+                else
+                    echo "目前沒有 Change History。"
+                fi
+                pause_screen
+                ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
 main_menu()
 {
     while true; do
@@ -1815,12 +1899,24 @@ main_menu()
         echo ""
         echo "------------------------------------------------------------"
         echo ""
-        echo "  1) VSS / vSwitch 管理（Standard Virtual Switch）"
-        echo "  2) VDS 設定（Distributed Virtual Switch / SDN）"
-        echo "  3) 查看目前網路設定"
-        echo "  4) Backup / Recovery"
-        echo "  5) Baseline 管理"
-        echo "  6) Port Group 管理"
+        echo "  1) Network Objects"
+        echo "     ├─ VSS / vSwitch"
+        echo "     ├─ VDS / Distributed Virtual Switch"
+        echo "     ├─ Uplink"
+        echo "     ├─ Port Group"
+        echo "     └─ VMkernel / Management"
+        echo "  2) Change Management"
+        echo "     ├─ Diff / Dry-run"
+        echo "     └─ Change History"
+        echo "  3) Backup / Recovery"
+        echo "     ├─ Baseline"
+        echo "     ├─ Backup History"
+        echo "     └─ Recovery"
+        echo "  4) Network Status"
+        echo "     ├─ Current Configuration"
+        echo "     ├─ Topology"
+        echo "     ├─ Cluster"
+        echo "     └─ Connectivity"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
@@ -1829,12 +1925,10 @@ main_menu()
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_setup ;;
-            2) vds_setup ;;
-            3) show_current_network ;;
-            4) rollback_menu ;;
-            5) baseline_menu ;;
-            6) port_group_platform_menu ;;
+            1) network_objects_menu ;;
+            2) change_management_menu ;;
+            3) rollback_menu ;;
+            4) show_current_network ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
