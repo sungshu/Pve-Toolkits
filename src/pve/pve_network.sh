@@ -1261,6 +1261,7 @@ vds_configure()
 
     cluster_guard || { pause_screen; return 0; }
 
+    if ! ensure_network_backup; then return 0; fi
 
     select_sdn_zone || { pause_screen; return 0; }
     if ! select_sdn_bridge; then
@@ -1598,6 +1599,9 @@ vss_port_group_delete()
     echo " VSS Port Group 刪除"
     echo "============================================================"
     echo ""
+    cluster_guard || { pause_screen; return 0; }
+    if ! ensure_network_backup; then return 0; fi
+
     echo "刪除會實際移除 /etc/network/interfaces 中的 VLAN Interface 與 Port Group Bridge。"
     echo ""
 
