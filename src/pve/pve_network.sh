@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.7
+# Version: 2.0.8
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.7"
+SCRIPT_VERSION="2.0.8"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -526,7 +526,8 @@ write_vss_interfaces()
     local temp
 
     ensure_dirs
-    GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    local generated_file
+    generated_file="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     cp -a /etc/network/interfaces "${generated_file}"
 
     if [[ -n "${bond_mode}" ]]; then
@@ -541,7 +542,7 @@ write_vss_interfaces()
         bridge_port="${bond_name}"
     fi
 
-    temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+    temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     awk -v bridge="${bridge}" -v bond="${bond_name}" '
         BEGIN { RS=""; ORS="\n\n" }
         {
@@ -1442,6 +1443,7 @@ EOF
 
     local change_id
     change_id="$(create_change_id)"
+    log_step "已完成設定整理，準備 Backup 並套用網路設定。"
     if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
         rm -f "${generated_file}"
         log_error "VSS Port Group ${vnet} 建立失敗，已嘗試 Recovery。"
@@ -1539,8 +1541,10 @@ vss_port_group_delete()
     generated_file="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     cp -a /etc/network/interfaces "${generated_file}"
     local temp target_name
+    log_step "準備刪除 VSS Port Group：${targets[*]}"
     for target_name in "${targets[@]}"; do
-        temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+        log_step "處理 Port Group：${target_name}"
+        temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
         awk -v pg="${target_name}" '
             BEGIN { RS=""; ORS="\n\n" }
             {
@@ -1576,7 +1580,7 @@ vss_port_group_delete()
             fi
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
         if ((used == 0)); then
-            temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
+            temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
             awk -v vlan_dev="${target_vlan_dev}" '
                 BEGIN { RS=""; ORS="\n\n" }
                 {
@@ -1600,6 +1604,7 @@ vss_port_group_delete()
     fi
     rm -f "${generated_file}"
 
+    log_ok "VSS Port Group 網路設定已套用，開始同步 State。"
     for target_name in "${targets[@]}"; do
         remove_state_entry "VSS_PORT_GROUP" "${target_name}"
         remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${target_name}"
