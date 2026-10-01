@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.0
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
