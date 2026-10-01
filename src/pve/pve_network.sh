@@ -466,6 +466,26 @@ network_backup_exists()
 
 ensure_network_backup()
 {
+    if network_backup_exists; then return 0; fi
+    echo ""
+    echo "尚未建立網路 Backup。"
+    if ! confirm "是否現在建立 Backup？"; then
+        log_info "未建立 Backup，取消此次網路變更。"
+        pause_screen
+        return 1
+    fi
+    create_baseline
+    network_backup_exists
+}
+
+network_backup_exists()
+{
+    baseline_exists && return 0
+    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_network_backup()
+{
     if network_backup_exists; then
         return 0
     fi
@@ -1306,6 +1326,30 @@ vds_configure()
     pause_screen
 }
 
+vds_configure()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Distributed Virtual Switch / VDS"
+        echo "============================================================"
+        echo ""
+        echo "  1) Distributed Virtual Switch"
+        echo "  2) Port Group"
+        echo "  3) 查看"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vds_configure ;;
+            2) port_group_create ;;
+            3) show_vds_config; pause_screen ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
 vds_setup()
 {
     while true; do
@@ -1392,6 +1436,8 @@ vss_port_group_create()
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
+
+    if ! ensure_network_backup; then return 0; fi
 
     if ! ensure_network_backup; then return 0; fi
 
@@ -1661,6 +1707,447 @@ vds_port_group_delete()
 }
 
 vss_port_group_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " VSS Port Group"
+        echo "============================================================"
+        echo ""
+        echo "  1) 建立"
+        echo "  2) 刪除"
+        echo "  3) 查看"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_port_group_create ;;
+            2) vss_port_group_delete ;;
+            3) port_group_list_vss; pause_screen ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+vss_vmkernel_menu()
+{
+    show_header
+    echo "============================================================"
+    echo " VMkernel Adapter / Management"
+    echo "============================================================"
+    echo ""
+    get_management_info
+    echo "  Device ：${DEV_WITH_GW:-未偵測}"
+    echo "  IP     ：${CURRENT_IP:-未偵測}"
+    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    pause_screen
+}
+
+show_current_network()
+{
+    show_header
+    echo "============================================================"
+    echo " 目前網路設定"
+    echo "============================================================"
+    echo ""
+
+    get_management_info
+    echo "管理連線："
+    echo "  Device ：${DEV_WITH_GW:-未偵測}"
+    echo "  IP     ：${CURRENT_IP:-未偵測}"
+    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    echo ""
+
+    echo "------------------------------------------------------------"
+    echo " 實體 NIC"
+    echo "------------------------------------------------------------"
+    while read -r nic; do        [[ -n "${nic}" ]] || continue
+        printf "  %-12s %-12s %s\n" "${nic}" "$(get_link_speed "${nic}")" "$(get_link_state "${nic}")"
+    done < <(get_physical_nics)
+
+    echo ""
+    echo "------------------------------------------------------------"
+    echo " Linux Bridge / vSwitch"
+    echo "------------------------------------------------------------"
+    ip -br link show type bridge 2>/dev/null || true
+    echo ""
+    ip -br addr show | awk '$1 ~ /^vmbr[0-9]+$/ {print}' || true
+
+    echo ""
+    echo "------------------------------------------------------------"
+    echo " Bond"
+    echo "------------------------------------------------------------"
+    if ls /proc/net/bonding/* >/dev/null 2>&1; then
+        for file in /proc/net/bonding/*; do
+            [[ -f "${file}" ]] || continue
+            echo "[$(basename "${file}")]"
+            grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${file}" || true
+            echo ""
+        done
+    else
+        echo "目前沒有 Bond。"
+    fi
+
+    echo "------------------------------------------------------------"
+    echo " SDN / VDS"
+    echo "------------------------------------------------------------"
+    pvesh get /cluster/sdn/zones 2>/dev/null || true
+    echo ""
+    pvesh get /cluster/sdn/vnets 2>/dev/null || true
+    echo ""
+
+    pause_screen
+}
+
+vss_reconcile_state_after_recovery()
+{
+    local target="${1:-/etc/network/interfaces}"
+    local name vlan_dev bridge
+
+    [[ -f "${target}" ]] || return 0
+
+    # Recovery 成功後，State 必須與還原後的 Native Network Configuration 同步。
+    # 只處理 PVE NETWORK PRO 自己追蹤的 VSS Port Group，避免碰外部物件。
+    while IFS=$'\t' read -r type name value; do
+        [[ "${type}" == "VSS_PORT_GROUP" ]] || continue
+        [[ -n "${name}" ]] || continue
+
+        vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${value}"
+
+        # 還原後設定檔已不存在的 Tool-owned Port Group，必須同步清除 runtime object。
+        if ! grep -qE "^auto[[:space:]]+${name}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            if ip link show "${name}" >/dev/null 2>&1; then
+                log_step "清理 Recovery 後殘留 Port Group：${name}"
+                ip link delete "${name}" 2>/dev/null || true
+            fi
+        fi
+
+        # VLAN sub-interface 也必須同步清理，否則會留下孤兒 VLAN 介面。
+        if [[ -n "${vlan_dev}" ]] && ! grep -qE "^auto[[:space:]]+${vlan_dev}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            if ip link show "${vlan_dev}" >/dev/null 2>&1; then
+                log_step "清理 Recovery 後殘留 VLAN Interface：${vlan_dev}"
+                ip link delete "${vlan_dev}" 2>/dev/null || true
+            fi
+        fi
+
+        # 還原後不存在的 Port Group 不應繼續留在 State。
+        if ! grep -qE "^auto[[:space:]]+${name}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            remove_state_entry "VSS_PORT_GROUP" "${name}"
+            remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${name}"
+            remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${name}"
+        fi
+    done < "${STATE_FILE}"
+}
+
+rollback_vss()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup / Recovery - VSS"
+    echo "============================================================"
+    echo ""
+
+    if [[ ! -f "${VSS_DIR}/interfaces.before" ]]; then
+        log_error "找不到 VSS 變更前設定：${VSS_DIR}/interfaces.before"
+        pause_screen
+        return 0
+    fi
+
+    echo "將還原：${VSS_DIR}/interfaces.before"
+    echo ""
+    if ! confirm "確認還原 VSS？"; then
+        pause_screen
+        return 0
+    fi
+
+    cluster_guard || { pause_screen; return 0; }
+
+    if ! ensure_network_backup; then return 0; fi
+
+    if ! ensure_network_backup; then return 0; fi
+
+    local change_id
+    change_id="$(create_change_id)"
+    cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.current-before-rollback"
+    if ! apply_interfaces_file "${change_id}" "${VSS_DIR}/interfaces.before"; then
+        log_error "VSS Recovery 套用失敗。"
+        log_error "目前變更前版本仍保存於：${VSS_DIR}/interfaces.current-before-rollback"
+        pause_screen
+        return 1
+    fi
+
+    vss_reconcile_state_after_recovery "${VSS_DIR}/interfaces.before"
+
+    if cluster_quorate; then
+        log_ok "VSS Recovery 完成，設定檔、Runtime Object 與 State 已同步。"
+        log_ok "Cluster Quorum 正常。"
+    else
+        log_error "Rollback 後 Cluster Quorum 異常，請立即檢查。"
+    fi
+    pause_screen
+}
+rollback_vds()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup / Recovery - VDS"
+    echo "============================================================"
+    echo ""
+    echo "只處理本工具記錄建立的 SDN Zone / VNet。"
+    echo "不會清除所有 SDN 設定。"
+    echo ""
+
+    local -a zones=()
+    local zone
+    while read -r zone; do
+        [[ -n "${zone}" ]] && zones+=("${zone}")
+    done < <(awk -F '\t' '$1=="VDS_ZONE" {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+
+    if ((${#zones[@]} == 0)); then
+        echo "沒有本工具建立的 SDN Zone。"
+        pause_screen
+        return 0
+    fi
+
+    local i=1 choice
+    for zone in "${zones[@]}"; do
+        printf "  %2d) %s\n" "$i" "$zone"
+        i=$((i + 1))
+    done
+    echo "  0) 返回"
+
+    while true; do
+        read -r -p "選擇要 Rollback 的 Zone：" choice
+        [[ "${choice}" == "0" ]] && { pause_screen; return 0; }
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#zones[@]})); then
+            zone="${zones[$((choice - 1))]}"
+            break
+        fi
+        log_error "選擇無效。"
+    done
+
+    if ! confirm "確認刪除本工具建立的 SDN Zone ${zone} 及其 VNet？"; then
+        pause_screen
+        return 0
+    fi
+
+    local -a vnets=()
+    local vnet
+    while read -r vnet; do
+        [[ -n "${vnet}" ]] && vnets+=("${vnet}")
+    done < <(awk -F '\t' -v z="${zone}" '$1=="PORT_GROUP_ZONE" && $3==z {print $2}' "${STATE_FILE}" 2>/dev/null || true)
+
+    for vnet in "${vnets[@]}"; do
+        if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+            pvesh delete "/cluster/sdn/vnets/${vnet}"
+        fi
+        remove_state_entry "PORT_GROUP" "${vnet}"
+        remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
+    done
+
+    if pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
+        pvesh delete "/cluster/sdn/zones/${zone}"
+    fi
+    remove_state_entry "VDS_ZONE" "${zone}"
+    pvesh set /cluster/sdn
+
+    log_ok "VDS Rollback 完成：${zone}"
+    pause_screen
+}
+
+rollback_baseline()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup / Recovery - Baseline"
+    echo "============================================================"
+    echo ""
+    echo "這是高風險操作。"
+    echo "Baseline 會直接覆蓋目前 /etc/network/interfaces。"
+    echo ""
+
+    if ! baseline_exists; then
+        log_error "尚未建立 Baseline。"
+        pause_screen
+        return 0
+    fi
+
+    if ! confirm "確認使用最初 Baseline 還原網路設定？"; then
+        pause_screen
+        return 0
+    fi
+
+    cluster_guard || { pause_screen; return 0; }
+
+    local change_id
+    change_id="$(create_change_id)"
+    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
+    if ! apply_interfaces_file "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
+        log_error "Baseline Recovery 套用失敗。"
+        pause_screen
+        return 1
+    fi
+
+    if cluster_quorate; then
+        log_ok "Baseline Rollback 完成。"
+    else
+        log_error "Baseline Rollback 後 Cluster Quorum 異常。"
+    fi
+    pause_screen
+}
+
+backup_history()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup History"
+    echo "============================================================"
+    echo ""
+    if [[ ! -d "${BACKUP_DIR}" ]]; then
+        echo "目前沒有 Backup。"
+    else
+        find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '  %h\n' 2>/dev/null | sort -u
+    fi
+    pause_screen
+}
+
+rollback_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Backup / Recovery"
+        echo "============================================================"
+        echo ""
+        echo "  1) Backup History"
+        echo "  2) VSS - 還原 VSS 變更前設定"
+        echo "  3) VDS - 還原本工具建立的 SDN 物件"
+        echo "  4) Baseline - 還原最初網路設定"
+        echo "  0) 返回"
+        echo ""
+
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) backup_history ;;
+            2) rollback_vss ;;
+            3) rollback_vds ;;
+            4) rollback_baseline ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+baseline_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Baseline 管理"
+        echo "============================================================"
+        echo ""
+        echo "  1) 查看 Baseline"
+        echo "  2) 建立 Baseline"
+        echo "  0) 返回"
+        echo ""
+
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) show_header; show_baseline; pause_screen ;;
+            2) show_header; create_baseline; pause_screen ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+network_objects_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Network Objects"
+        echo "============================================================"
+        echo ""
+        echo "  1) Virtual Switch / VSS"
+        echo "  2) Distributed Virtual Switch / VDS"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vss_setup ;;
+            2) vds_setup ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
+}
+
+main_menu()
+{
+    while true; do
+        show_header
+        echo "  PVE 節點：$(get_node_name)"
+        echo -e "  Cluster  ：$(cluster_status_text)"
+        echo "  PVE 版本 ：$(get_pve_version)"
+        echo ""
+        echo "------------------------------------------------------------"
+        echo ""
+        echo "  1) Network Objects"
+        echo "     ├─ Virtual Switch / VSS"
+        echo "     │  ├─ Physical Uplink"
+        echo "     │  ├─ Port Group"
+        echo "     │  └─ VMkernel Adapter / Management"
+        echo "     └─ Distributed Virtual Switch / VDS"
+        echo "        └─ Port Group"
+        echo "  2) Backup / Recovery"
+        echo "     ├─ Baseline"
+        echo "     ├─ Backup History"
+        echo "     └─ Recovery"
+        echo "  3) Network Status"
+        echo "     ├─ Current Configuration"
+        echo "     ├─ Topology"
+        echo "     ├─ Cluster"
+        echo "     └─ Connectivity"
+        echo "  0) 離開"
+        echo ""
+        echo "------------------------------------------------------------"
+        echo ""
+
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) network_objects_menu ;;
+            2) rollback_menu ;;
+            3) show_current_network ;;
+            0)
+                echo "離開 PVE NETWORK PRO。"
+                return 0
+                ;;
+            *) log_error "選擇無效，請輸入 0～3。"; sleep 1 ;;
+        esac
+    done
+}
+
+main()
+{
+    require_root
+    check_environment
+    ensure_dirs
+    update_network_script "$@"
+    main_menu
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fvss_port_group_menu()
 {
     while true; do
         show_header
