@@ -908,7 +908,6 @@ vss_uplink_add()
         log_error "選擇無效。"
     done
 
-    show_nics
     if ! select_nic "請選擇第一張 Physical NIC"; then
         pause_screen
         return 0
