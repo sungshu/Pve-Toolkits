@@ -232,7 +232,37 @@ Physical NIC
 
 Management Impact 變更必須使用 Confirmation Transaction。
 
-## 10. 2.0 UI
+## 10. Rollback / Recovery Transaction
+
+Rollback 與 Recovery 不再直接覆蓋 `/etc/network/interfaces`。
+
+VSS Rollback 與 Baseline Recovery 均必須：
+
+1. 建立新的 Change ID。
+2. 將目前 `/etc/network/interfaces` 建立 Backup。
+3. 將還原內容寫入 `/etc/network/interfaces.new`。
+4. 建立 Current / Proposed / Diff Plan。
+5. 執行 Proposed Configuration Validation。
+6. 通過後才套用至 PVE Native Network。
+7. 套用失敗時使用該 Change ID 的 Backup Recovery。
+8. 驗證 Cluster / Network 狀態後完成 Recovery。
+
+因此 Rollback 本身也是標準 Change Transaction，而不是另一套直接覆蓋設定的機制。
+
+### Recovery 資料
+
+每次 Change 使用相同的 `CHG-YYYYMMDD-HHMMSS` 關聯：
+
+```text
+backup/CHG-YYYYMMDD-HHMMSS/
+plans/CHG-YYYYMMDD-HHMMSS/
+changes/CHG-YYYYMMDD-HHMMSS/
+recovery/
+```
+
+Recovery 必須保留變更前狀態，避免「Rollback 失敗後沒有第二退路」。
+
+## 11. 2.0 UI
 
 ```
 PVE NETWORK PRO
@@ -241,22 +271,19 @@ PVE NETWORK PRO
 1) Network Objects
    ├─ VSS / vSwitch
    ├─ VDS / Distributed Switch
-   ├─ Uplink
    ├─ Port Group
-   └─ VMkernel / Management
+   └─ Uplink / Management
 
 2) Change Management
-   ├─ New Change
-   ├─ Current Changes
-   ├─ Diff / Dry-run
-   ├─ Apply
+   ├─ Current / Proposed / Diff
+   ├─ Dry-run / Validate
    └─ Change History
 
 3) Backup / Recovery
-   ├─ Baseline
    ├─ Backup History
-   ├─ Restore
-   └─ Recovery
+   ├─ VSS Recovery
+   ├─ VDS Recovery
+   └─ Baseline Recovery
 
 4) Network Status
    ├─ Current Configuration
@@ -267,7 +294,7 @@ PVE NETWORK PRO
 0) Exit
 ```
 
-## 11. 2.0 禁止事項
+## 12. 2.0 禁止事項
 
 - 禁止使用 `/etc/pve-poc/`
 - 禁止整份直接覆蓋 `/etc/network/interfaces`
@@ -276,7 +303,7 @@ PVE NETWORK PRO
 - 禁止硬編碼 `bond0`
 - 禁止 PVE NETWORK PRO 自行取代 PVE Network Engine
 
-## 12. 底層原則
+## 13. 底層原則
 
 PVE NETWORK PRO 負責：
 
