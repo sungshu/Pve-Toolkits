@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.3
+# Version: 2.0.4
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.3"
+SCRIPT_VERSION="2.0.4"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1608,16 +1608,16 @@ port_group_platform_menu()
                 echo " VDS Port Group"
                 echo "============================================================"
                 echo ""
-                echo "  1) 查看 VDS Port Group / VNet"
-                echo "  2) 建立 VDS Port Group"
-                echo "  3) 刪除 VDS Port Group"
+                echo "  1) 建立 VDS Port Group"
+                echo "  2) 刪除 VDS Port Group"
+                echo "  3) 查看 VDS Port Group / VNet"
                 echo "  0) 返回"
                 echo ""
                 read -r -p "請選擇：" choice
                 case "${choice}" in
-                    1) show_header; port_group_list_vds; pause_screen ;;
-                    2) vds_port_group_create ;;
-                    3) vds_port_group_delete ;;
+                    1) vds_port_group_create ;;
+                    2) vds_port_group_delete ;;
+                    3) show_header; port_group_list_vds; pause_screen ;;
                     0) ;;
                     *) log_error "選擇無效。"; sleep 1 ;;
                 esac
