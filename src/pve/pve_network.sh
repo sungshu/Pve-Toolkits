@@ -1742,67 +1742,25 @@ vss_port_group_delete()
     fi
     pause_screen
 }
-vds_port_group_delete()
-{
-    port_group_delete
-}
-
-port_group_platform_menu()
+vss_port_group_menu()
 {
     while true; do
         show_header
         echo "============================================================"
-        echo " Port Group 管理"
+        echo " VSS Port Group"
         echo "============================================================"
         echo ""
-        echo "  1) VSS Port Group"
-        echo "  2) VDS Port Group"
+        echo "  1) 建立"
+        echo "  2) 刪除"
+        echo "  3) 查看"
         echo "  0) 返回"
         echo ""
-
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1)
-                show_header
-                echo "============================================================"
-                echo " VSS Port Group"
-                echo "============================================================"
-                echo ""
-                echo "  1) 建立 VSS Port Group"
-                echo "  2) 刪除 VSS Port Group"
-                echo "  3) 查看 VSS Port Group"
-                echo "  0) 返回"
-                echo ""
-                read -r -p "請選擇：" choice
-                case "${choice}" in
-                    1) vss_port_group_create ;;
-                    2) vss_port_group_delete ;;
-                    3) show_header; port_group_list_vss; pause_screen ;;
-                    0) ;;
-                    *) log_error "選擇無效。"; sleep 1 ;;
-                esac
-                ;;
-            2)
-                show_header
-                echo "============================================================"
-                echo " VDS Port Group"
-                echo "============================================================"
-                echo ""
-                echo "  1) 建立 VDS Port Group"
-                echo "  2) 刪除 VDS Port Group"
-                echo "  3) 查看 VDS Port Group / VNet"
-                echo "  0) 返回"
-                echo ""
-                read -r -p "請選擇：" choice
-                case "${choice}" in
-                    1) vds_port_group_create ;;
-                    2) vds_port_group_delete ;;
-                    3) show_header; port_group_list_vds; pause_screen ;;
-                    0) ;;
-                    *) log_error "選擇無效。"; sleep 1 ;;
-                esac
-                ;;
+            1) vss_port_group_create ;;
+            2) vss_port_group_delete ;;
+            3) port_group_list_vss; pause_screen ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
