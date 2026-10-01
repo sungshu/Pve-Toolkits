@@ -527,7 +527,7 @@ write_vss_interfaces()
 
     ensure_dirs
     GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
-    cp -a /etc/network/interfaces "${GENERATED_INTERFACES_FILE}"
+    cp -a /etc/network/interfaces "${generated_file}"
 
     if [[ -n "${bond_mode}" ]]; then
         bond_name="$(awk '/^auto bond[0-9]+$/ {print $2; exit}' /etc/network/interfaces 2>/dev/null || true)"
@@ -550,7 +550,7 @@ write_vss_interfaces()
             if (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") keep=0
             if (keep) print
         }
-    ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
+    ' "${generated_file}" > "${temp}"
 
     {
         echo "auto ${bridge}"
@@ -577,7 +577,7 @@ write_vss_interfaces()
         fi
     } >> "${temp}"
 
-    install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
+    install -m 0644 "${temp}" "${generated_file}"
     rm -f "${temp}"
 }
 
@@ -948,15 +948,15 @@ vss_uplink_add()
         return 1
     fi
 
-    if ! apply_interfaces "${GENERATED_INTERFACES_FILE}"; then
-        rm -f "${GENERATED_INTERFACES_FILE}"
+    if ! apply_interfaces "${generated_file}"; then
+        rm -f "${generated_file}"
         log_error "VSS Uplink 套用失敗，立即嘗試還原。"
         cp -a "${VSS_DIR}/interfaces.before-uplink" /etc/network/interfaces
         ifreload -a || true
         pause_screen
         return 1
     fi
-    rm -f "${GENERATED_INTERFACES_FILE}"
+    rm -f "${generated_file}"
 
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS Uplink 驗證失敗。"
@@ -1548,8 +1548,8 @@ vss_port_group_delete()
                 if ($0 ~ "(^|\n)auto[[:space:]]+" pg "[[:space:]]*(\n|$)") keep=0
                 if (keep) print
             }
-        ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
-        install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
+        ' "${generated_file}" > "${temp}"
+        install -m 0644 "${temp}" "${generated_file}"
         rm -f "${temp}"
     done
 
@@ -1584,8 +1584,8 @@ vss_port_group_delete()
                     if ($0 ~ "(^|\n)auto[[:space:]]+" vlan_dev "[[:space:]]*(\n|$)") keep=0
                     if (keep) print
                 }
-            ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
-            install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
+            ' "${generated_file}" > "${temp}"
+            install -m 0644 "${temp}" "${generated_file}"
             rm -f "${temp}"
         fi
     done
