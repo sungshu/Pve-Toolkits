@@ -394,10 +394,10 @@ select_bridge()
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice == new_index)); then
             while true; do
                 read -r -p "新的 Virtual Switch 名稱：" SELECTED_BRIDGE
-                if [[ "${SELECTED_BRIDGE}" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
+                if [[ "${SELECTED_BRIDGE}" =~ ^[A-Za-z][A-Za-z0-9]{0,9}$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
                     return 0
                 fi
-                log_error "名稱必須是 1～15 字元的合法 Linux 網路介面名稱，且目前未使用。"
+                log_error "Bridge 名稱必須以英文字母開頭，僅能使用英文字母與數字，最多 10 字元，且目前未使用。"
             done
         fi
         log_error "選擇無效。"
