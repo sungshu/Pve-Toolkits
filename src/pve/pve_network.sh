@@ -289,6 +289,19 @@ show_nics()
     echo ""
 }
 
+nic_used_elsewhere()
+{
+    local nic="${1}" target_bridge="${2}" target_bond=""
+    target_bond="$(awk -v bridge="${target_bridge}" 'BEGIN{RS=""} $0~"(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)"{n=split($0,a,"\\n");for(i=1;i<=n;i++)if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+bond[0-9]+/){sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i]);print a[i];exit}}' /etc/network/interfaces 2>/dev/null || true)"
+    awk -v nic="${nic}" -v target="${target_bridge}" -v target_bond="${target_bond}" 'BEGIN{RS=""}{
+        is_target=($0~"(^|\\n)auto[[:space:]]+" target "[[:space:]]*(\\n|$)")
+        is_target_bond=(target_bond!="" && $0~"(^|\\n)auto[[:space:]]+" target_bond "[[:space:]]*(\\n|$)")
+        if(is_target||is_target_bond)next
+        if($0~"(^|\\n)bridge-ports[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
+        if($0~"(^|\\n)bond-slaves[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
+        if($0~"(^|\\n)iface[[:space:]]+" nic "[[:space:]]+inet[[:space:]]+(static|dhcp)")found=1
+    }END{exit(found?0:1)}' /etc/network/interfaces 2>/dev/null
+}
 select_nic()
 {
     local prompt="$1"
@@ -535,70 +548,42 @@ save_interfaces_copy()
 
 write_vss_interfaces()
 {
-    local bridge="$1"
-    local nic1="$2"
-    local nic2="$3"
-    local bond_mode="$4"
-    local bond_name=""
-    local bridge_port="${nic1}"
-    local temp
-
+    local bridge="$1" nic1="$2" nic2="$3" bond_mode="$4"
+    local bond_name="" bridge_port="${nic1}"
     ensure_dirs
     GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     local generated_file="${GENERATED_INTERFACES_FILE}"
     cp -a /etc/network/interfaces "${generated_file}"
-
     if [[ -n "${bond_mode}" ]]; then
-        bond_name="$(awk '/^auto bond[0-9]+$/ {print $2; exit}' /etc/network/interfaces 2>/dev/null || true)"
-        if [[ -z "${bond_name}" ]]; then
+        bridge_port="$(awk -v bridge="${bridge}" 'BEGIN{RS=""} $0~"(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)"{n=split($0,a,"\\n");for(i=1;i<=n;i++)if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+/){sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i]);print a[i];exit}}' "${generated_file}")"
+        if [[ "${bridge_port}" =~ ^bond[0-9]+$ ]]; then
+            bond_name="${bridge_port}"
+        else
             local n=0
-            while grep -qE "^auto bond${n}( |$)" /etc/network/interfaces 2>/dev/null; do
-                n=$((n + 1))
-            done
-            bond_name="bond${n}"
+            while grep -qE "^auto bond${n}([[:space:]]|$)" "${generated_file}" 2>/dev/null; do n=$((n+1)); done
+            bond_name="bond${n}"; bridge_port="${bond_name}"
         fi
-        bridge_port="${bond_name}"
     fi
-
+    local temp
     temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
-    awk -v bridge="${bridge}" -v bond="${bond_name}" '
-        BEGIN { RS=""; ORS="\n\n" }
+    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" -v nic1="${nic1}" -v nic2="${nic2}" -v bond_mode="${bond_mode}" '
+        BEGIN{RS="";ORS="\n\n";bridge_found=0;bond_found=0}
         {
-            keep=1
-            if ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)") keep=0
-            if (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") keep=0
-            if (keep) print
+            is_bridge=($0~"(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
+            is_bond=(bond!="" && $0~"(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)")
+            if(is_bridge){bridge_found=1;n=split($0,a,"\n");out="";for(i=1;i<=n;i++){line=a[i];if(line~/^[[:space:]]*bridge-ports[[:space:]]+/)line="    bridge-ports " bridge_port;out=out(out==""?"":"\n")line}print out;next}
+            if(is_bond){bond_found=1;n=split($0,a,"\n");out="";for(i=1;i<=n;i++){line=a[i];if(line~/^[[:space:]]*bond-slaves[[:space:]]+/)line="    bond-slaves " nic1 " " nic2;else if(line~/^[[:space:]]*bond-miimon[[:space:]]+/)line="    bond-miimon 100";else if(line~/^[[:space:]]*bond-mode[[:space:]]+/)line="    bond-mode " bond_mode;else if(line~/^[[:space:]]*bond-primary[[:space:]]+/){if(bond_mode=="active-backup")line="    bond-primary " nic1;else line=""}if(line!="")out=out(out==""?"":"\n")line}print out;next}
+            print
+        }
+        END{
+            if(!bridge_found){print "auto " bridge;print "iface " bridge " inet manual";print "    bridge-ports " bridge_port;print "    bridge-stp off";print "    bridge-fd 0";print "    bridge-vlan-aware yes";print "    bridge-vids 2-4094"}
+            if(bond!=""&&!bond_found){print "auto " bond;print "iface " bond " inet manual";print "    bond-slaves " nic1 " " nic2;print "    bond-miimon 100";print "    bond-mode " bond_mode;if(bond_mode=="active-backup")print "    bond-primary " nic1}
         }
     ' "${generated_file}" > "${temp}"
-
-    {
-        echo "auto ${bridge}"
-        if [[ -n "${CURRENT_IP}" && "${DEV_WITH_GW}" == "${bridge}" ]]; then
-            echo "iface ${bridge} inet static"
-            echo "    address ${CURRENT_IP}"
-            [[ -n "${CURRENT_GW}" ]] && echo "    gateway ${CURRENT_GW}"
-        else
-            echo "iface ${bridge} inet manual"
-        fi
-        echo "    bridge-ports ${bridge_port}"
-        echo "    bridge-stp off"
-        echo "    bridge-fd 0"
-        echo "    bridge-vlan-aware yes"
-        echo "    bridge-vids 2-4094"
-        if [[ -n "${bond_mode}" ]]; then
-            echo ""
-            echo "auto ${bond_name}"
-            echo "iface ${bond_name} inet manual"
-            echo "    bond-slaves ${nic1} ${nic2}"
-            echo "    bond-miimon 100"
-            echo "    bond-mode ${bond_mode}"
-            [[ "${bond_mode}" == "active-backup" ]] && echo "    bond-primary ${nic1}"
-        fi
-    } >> "${temp}"
-
     install -m 0644 "${temp}" "${generated_file}"
     rm -f "${temp}"
 }
+
 
 create_change_id()
 {
@@ -930,7 +915,11 @@ vss_uplink_add()
         return 0
     fi
     local first_nic="${SELECTED_NIC}"
-
+    if nic_used_elsewhere "${first_nic}" "${bridge}"; then
+        log_error "NIC ${first_nic} 已被其他 Bridge / Bond 使用，停止 Uplink 變更。"
+        pause_screen
+        return 0
+    fi
     select_bond_mode
     local second_nic=""
     if [[ -n "${BOND_MODE}" ]]; then
@@ -941,8 +930,12 @@ vss_uplink_add()
             return 0
         fi
         second_nic="${SECONDARY_NIC}"
+        if nic_used_elsewhere "${second_nic}" "${bridge}"; then
+            log_error "NIC ${second_nic} 已被其他 Bridge / Bond 使用，停止 Uplink 變更。"
+            pause_screen
+            return 0
+        fi
     fi
-
     get_management_info
 
     echo ""
