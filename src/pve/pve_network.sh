@@ -648,6 +648,7 @@ write_vss_interfaces()
     local bond_hash="${BOND_XMIT_HASH_POLICY:-}"
     local lacp_rate="${BOND_LACP_RATE:-}"
     local bond_name=""
+    local old_bond_name=""
     local bridge_port="${nic1}"
 
     ensure_dirs
@@ -661,30 +662,38 @@ write_vss_interfaces()
     # Physical NIC → Bond（可選）→ Linux Bridge。
     # 2.0.17 只將既有 CLI 實作包進 VMware 風格 VSS / Physical Uplink UI。
 
-    if [[ -n "${bond_mode}" ]]; then
-        bridge_port="$(awk -v bridge="${bridge}" '
-            BEGIN { RS=""; ORS="\n\n" }
-            $0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)" {
-                n=split($0,a,"\n")
-                for(i=1;i<=n;i++)
-                    if(a[i] ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
-                        sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i])
-                        print a[i]
-                        exit
-                    }
-            }
-        ' "${generated_file}")"
+    bridge_port="$(awk -v bridge="${bridge}" '
+        BEGIN { RS=""; ORS="\n\n" }
+        $0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)" {
+            n=split($0,a,"\n")
+            for(i=1;i<=n;i++)
+                if(a[i] ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
+                    sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i])
+                    print a[i]
+                    exit
+                }
+        }
+    ' "${generated_file}")"
 
-        if [[ "${bridge_port}" =~ ^bond[0-9]+$ ]]; then
-            bond_name="${bridge_port}"
+    if [[ "${bridge_port}" =~ ^bond[0-9]+$ ]]; then
+        old_bond_name="${bridge_port}"
+    fi
+
+    if [[ -n "${bond_mode}" ]]; then
+        if [[ -n "${old_bond_name}" ]]; then
+            bond_name="${old_bond_name}"
         else
             local n=0
             while grep -qE "^auto bond${n}([[:space:]]|$)" "${generated_file}" 2>/dev/null; do
                 n=$((n + 1))
             done
             bond_name="bond${n}"
-            bridge_port="${bond_name}"
         fi
+        bridge_port="${bond_name}"
+    else
+        # Single NIC 模式：若原 VSS 使用 Bond，移除舊 Bond，避免留下孤立 bond0。
+        bridge_port="${nic1}"
+        bond_name=""
     fi
 
     temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
@@ -692,6 +701,7 @@ write_vss_interfaces()
     awk -v bridge="${bridge}" \
         -v bridge_port="${bridge_port}" \
         -v bond="${bond_name}" \
+        -v old_bond="${old_bond_name}" \
         -v nic1="${nic1}" \
         -v nic2="${nic2}" \
         -v bond_mode="${bond_mode}" \
@@ -706,7 +716,8 @@ write_vss_interfaces()
 
         {
             is_bridge = ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
-            is_bond = (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)")
+            is_bond = ((bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") ||
+                       (old_bond != "" && old_bond != bond && $0 ~ "(^|\n)auto[[:space:]]+" old_bond "[[:space:]]*(\n|$)"))
 
             if (is_bridge) {
                 bridge_found=1
@@ -1052,8 +1063,15 @@ ensure_bridge_vlan_aware()
         return 1
     }
 
-    if grep -qE "^[[:space:]]*bridge-vlan-aware[[:space:]]+yes([[:space:]]*)$" /etc/network/interfaces 2>/dev/null &&
-       grep -qE "^[[:space:]]*bridge-vids[[:space:]]+2-4094([[:space:]]*)$" /etc/network/interfaces 2>/dev/null; then
+    if awk -v bridge="${bridge}" '
+        BEGIN { RS=""; ok=0 }
+        $0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)" {
+            aware=($0 ~ /(^|\n)[[:space:]]*bridge-vlan-aware[[:space:]]+yes([[:space:]]*\n|$)/)
+            vids=($0 ~ /(^|\n)[[:space:]]*bridge-vids[[:space:]]+2-4094([[:space:]]*\n|$)/)
+            if(aware && vids) ok=1
+        }
+        END { exit(ok ? 0 : 1) }
+    ' /etc/network/interfaces 2>/dev/null; then
         return 0
     fi
 
