@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.19
+# Version: 2.0.20
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.19"
+SCRIPT_VERSION="2.0.20"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2496,10 +2496,33 @@ rollback_baseline()
         return 0
     fi
 
+    # Baseline Recovery 是最後的網路救援程序。
+    # 與一般 VSS / VDS 網路變更不同，不受 /etc/network/interfaces.new
+    # 的 GUI Pending Configuration Guard 阻擋。
+    if network_pending_configuration_exists; then
+        echo ""
+        echo "============================================================"
+        echo " 偵測到 PVE GUI Pending Network Configuration"
+        echo "============================================================"
+        echo ""
+        echo "目前存在："
+        echo "  /etc/network/interfaces.new"
+        echo ""
+        echo "Baseline Recovery 屬於最後的網路救援程序。"
+        echo "本次 Recovery 不會因 GUI Pending Configuration 而停止。"
+        echo ""
+        echo "Recovery 將直接還原："
+        echo "  /etc/network/interfaces"
+        echo ""
+    fi
+
     local change_id
     change_id="$(create_change_id)"
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
-    if ! apply_interfaces_file "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
+
+    # Recovery 必須繞過一般 apply_interfaces_file() 的 Pending Guard，
+    # 否則最後救援機制會在網路故障時被自己阻擋。
+    if ! restore_change_backup "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
         log_error "Baseline Recovery 套用失敗。"
         pause_screen
         return 1
