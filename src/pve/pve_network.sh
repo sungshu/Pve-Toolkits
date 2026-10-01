@@ -135,37 +135,36 @@ update_network_script()
 
     LATEST_VERSION="${actual_version}"
 
-    if [[ "${actual_version}" != "${SCRIPT_VERSION}" ]]; then
-        if printf "%s\n%s\n" "${SCRIPT_VERSION}" "${actual_version}" | sort -V | tail -n 1 | grep -qx "${actual_version}"; then
-            UPDATE_STATUS="有新版可用：v${actual_version}"
-        else
-            UPDATE_STATUS="GitHub 版本較舊：v${actual_version}"
-        fi
-    else
+    if [[ "${actual_version}" == "${SCRIPT_VERSION}" ]]; then
+        rm -f "${latest_tmp}"
         UPDATE_STATUS="已是最新版"
+        return 0
     fi
-
+    if ! printf "%s\n%s\n" "${SCRIPT_VERSION}" "${actual_version}" | sort -V | tail -n 1 | grep -qx "${actual_version}"; then
+        rm -f "${latest_tmp}"
+        UPDATE_STATUS="GitHub 版本較舊：v${actual_version}"
+        return 0
+    fi
+    UPDATE_STATUS="有新版可用：v${actual_version}"
+    if ! confirm "偵測到 GitHub 新版 v${actual_version}，是否更新本機腳本？"; then
+        rm -f "${latest_tmp}"
+        UPDATE_STATUS="有新版可用但未更新"
+        return 0
+    fi
     chmod 0755 "${latest_tmp}"
-
     if ! bash -n "${latest_tmp}" >/dev/null 2>&1; then
         rm -f "${latest_tmp}"
         UPDATE_STATUS="GitHub 腳本語法驗證失敗"
         return 0
     fi
-
     if ! mv -f "${latest_tmp}" "${NETWORK_SCRIPT_PATH}"; then
         rm -f "${latest_tmp}"
         UPDATE_STATUS="無法寫入 ${NETWORK_SCRIPT_PATH}"
         return 0
     fi
-
     chmod 0755 "${NETWORK_SCRIPT_PATH}"
+    UPDATE_STATUS="已下載並寫入 /root：v${actual_version}"
 
-    if [[ "${actual_version}" == "${SCRIPT_VERSION}" ]]; then
-        UPDATE_STATUS="已下載並寫入 /root（已是最新版）"
-    else
-        UPDATE_STATUS="已下載並寫入 /root：v${actual_version}"
-    fi
 
     export PVE_NETWORK_UPDATED=1
     exec "${NETWORK_SCRIPT_PATH}" "$@"
@@ -456,6 +455,25 @@ baseline_exists()
        -f "${BASELINE_DIR}/pvecm-nodes.orig" && \
        -f "${BASELINE_DIR}/ip-address.orig" && \
        -f "${BASELINE_DIR}/ip-route.orig" ]]
+}
+
+network_backup_exists()
+{
+    baseline_exists && return 0
+    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -print -quit 2>/dev/null | grep -q .
+}
+ensure_network_backup()
+{
+    if network_backup_exists; then return 0; fi
+    echo ""
+    echo "尚未建立網路 Backup。"
+    if ! confirm "是否現在建立 Backup？"; then
+        log_info "未建立 Backup，取消此次網路變更。"
+        pause_screen
+        return 1
+    fi
+    create_baseline
+    network_backup_exists
 }
 
 create_baseline()
@@ -1080,20 +1098,22 @@ vss_setup()
     while true; do
         show_header
         echo "============================================================"
-        echo " Virtual Switch"
+        echo " Virtual Switch / VSS"
         echo "============================================================"
         echo ""
-        echo "  1) Virtual Switch 管理"
-        echo "  2) Physical Uplink 管理"
-        echo "  3) 查看 Virtual Switch"
+        echo "  1) Physical Uplink"
+        echo "  2) Port Group"
+        echo "  3) VMkernel Adapter / Management"
+        echo "  4) 查看"
         echo "  0) 返回"
         echo ""
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_manage_menu ;;
-            2) vss_uplink_menu ;;
-            3) vss_show ;;
+            1) vss_uplink_add ;;
+            2) vss_port_group_menu ;;
+            3) vss_vmkernel_menu ;;
+            4) vss_show; pause_screen ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
@@ -1236,7 +1256,7 @@ port_group_exists_sdn()
     pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1
 }
 
-vds_setup()
+vds_configure()
 {
     show_header
     echo "============================================================"
@@ -1298,6 +1318,31 @@ vds_setup()
         log_ok "VDS / SDN Zone 建立完成。"
     fi
     pause_screen
+}
+
+vds_setup()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Distributed Virtual Switch / VDS"
+        echo "============================================================"
+        echo ""
+        echo "  1) Distributed Virtual Switch"
+        echo "  2) Port Group"
+        echo "  3) 查看"
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇：" choice
+        case "${choice}" in
+            1) vds_configure ;;
+            2) vds_port_group_create ;;
+            3) show_vds_config; pause_screen ;;
+            0) return 0 ;;
+            *) log_error "選擇無效。"; sleep 1 ;;
+        esac
+    done
 }
 
 
@@ -2016,9 +2061,8 @@ network_objects_menu()
         echo " Network Objects"
         echo "============================================================"
         echo ""
-        echo "  1) VSS / vSwitch"
-        echo "  2) VDS / Distributed Virtual Switch"
-        echo "  3) Port Group"
+        echo "  1) Virtual Switch / VSS"
+        echo "  2) Distributed Virtual Switch / VDS"
         echo "  0) 返回"
         echo ""
         local choice
@@ -2026,7 +2070,6 @@ network_objects_menu()
         case "${choice}" in
             1) vss_setup ;;
             2) vds_setup ;;
-            3) port_group_platform_menu ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
