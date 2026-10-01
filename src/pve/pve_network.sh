@@ -1614,7 +1614,7 @@ rollback_vss()
 {
     show_header
     echo "============================================================"
-    echo " Rollback / 還原 - VSS"
+    echo " Backup / Recovery - VSS"
     echo "============================================================"
     echo ""
 
@@ -1633,18 +1633,20 @@ rollback_vss()
 
     cluster_guard || { pause_screen; return 0; }
 
+    local change_id
+    change_id="$(create_change_id)"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.current-before-rollback"
-    cp -a "${VSS_DIR}/interfaces.before" /etc/network/interfaces
+    cp -a "${VSS_DIR}/interfaces.before" "${NATIVE_STAGING_FILE}"
 
-    if ! ifreload -a; then
-        log_error "Rollback 套用失敗。"
+    if ! apply_proposed_interfaces "${change_id}"; then
+        log_error "VSS Recovery 套用失敗。"
         log_error "目前變更前版本仍保存於：${VSS_DIR}/interfaces.current-before-rollback"
         pause_screen
         return 1
     fi
 
     if cluster_quorate; then
-        log_ok "VSS Rollback 完成，Cluster Quorum 正常。"
+        log_ok "VSS Recovery 完成，Cluster Quorum 正常。"
     else
         log_error "Rollback 後 Cluster Quorum 異常，請立即檢查。"
     fi
@@ -1655,7 +1657,7 @@ rollback_vds()
 {
     show_header
     echo "============================================================"
-    echo " Rollback / 還原 - VDS"
+    echo " Backup / Recovery - VDS"
     echo "============================================================"
     echo ""
     echo "只處理本工具記錄建立的 SDN Zone / VNet。"
@@ -1744,11 +1746,13 @@ rollback_baseline()
 
     cluster_guard || { pause_screen; return 0; }
 
+    local change_id
+    change_id="$(create_change_id)"
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
-    cp -a "${BASELINE_DIR}/interfaces.orig" /etc/network/interfaces
+    cp -a "${BASELINE_DIR}/interfaces.orig" "${NATIVE_STAGING_FILE}"
 
-    if ! ifreload -a; then
-        log_error "Baseline Rollback 套用失敗。"
+    if ! apply_proposed_interfaces "${change_id}"; then
+        log_error "Baseline Recovery 套用失敗。"
         pause_screen
         return 1
     fi
@@ -1761,26 +1765,43 @@ rollback_baseline()
     pause_screen
 }
 
+backup_history()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup History"
+    echo "============================================================"
+    echo ""
+    if [[ ! -d "${BACKUP_DIR}" ]]; then
+        echo "目前沒有 Backup。"
+    else
+        find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '  %h\n' 2>/dev/null | sort -u
+    fi
+    pause_screen
+}
+
 rollback_menu()
 {
     while true; do
         show_header
         echo "============================================================"
-        echo " Rollback / 還原"
+        echo " Backup / Recovery"
         echo "============================================================"
         echo ""
-        echo "  1) VSS - 還原 VSS 變更前設定"
-        echo "  2) VDS - 還原本工具建立的 SDN 物件"
-        echo "  3) Baseline - 還原最初網路設定"
+        echo "  1) Backup History"
+        echo "  2) VSS - 還原 VSS 變更前設定"
+        echo "  3) VDS - 還原本工具建立的 SDN 物件"
+        echo "  4) Baseline - 還原最初網路設定"
         echo "  0) 返回"
         echo ""
 
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) rollback_vss ;;
-            2) rollback_vds ;;
-            3) rollback_baseline ;;
+            1) backup_history ;;
+            2) rollback_vss ;;
+            3) rollback_vds ;;
+            4) rollback_baseline ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
@@ -1933,7 +1954,7 @@ main_menu()
                 echo "離開 PVE NETWORK PRO。"
                 return 0
                 ;;
-            *) log_error "選擇無效，請輸入 0～6。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入 0～4。"; sleep 1 ;;
         esac
     done
 }
