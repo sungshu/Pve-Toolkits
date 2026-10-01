@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.4
+# Version: 2.0.5
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.4"
+SCRIPT_VERSION="2.0.5"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1684,6 +1684,48 @@ show_current_network()
     pause_screen
 }
 
+vss_reconcile_state_after_recovery()
+{
+    local target="${1:-${NATIVE_STAGING_FILE}}"
+    local name vlan_dev bridge
+
+    [[ -f "${target}" ]] || return 0
+
+    # Recovery 成功後，State 必須與還原後的 Native Network Configuration 同步。
+    # 只處理 PVE NETWORK PRO 自己追蹤的 VSS Port Group，避免碰外部物件。
+    while IFS=$'\t' read -r type name value; do
+        [[ "${type}" == "VSS_PORT_GROUP" ]] || continue
+        [[ -n "${name}" ]] || continue
+
+        vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${value}"
+
+        # 還原後設定檔已不存在的 Tool-owned Port Group，必須同步清除 runtime object。
+        if ! grep -qE "^auto[[:space:]]+${name}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            if ip link show "${name}" >/dev/null 2>&1; then
+                log_step "清理 Recovery 後殘留 Port Group：${name}"
+                ip link delete "${name}" 2>/dev/null || true
+            fi
+        fi
+
+        # VLAN sub-interface 也必須同步清理，否則會留下孤兒 VLAN 介面。
+        if [[ -n "${vlan_dev}" ]] && ! grep -qE "^auto[[:space:]]+${vlan_dev}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            if ip link show "${vlan_dev}" >/dev/null 2>&1; then
+                log_step "清理 Recovery 後殘留 VLAN Interface：${vlan_dev}"
+                ip link delete "${vlan_dev}" 2>/dev/null || true
+            fi
+        fi
+
+        # 還原後不存在的 Port Group 不應繼續留在 State。
+        if ! grep -qE "^auto[[:space:]]+${name}([[:space:]]|$)" "${target}" 2>/dev/null; then
+            remove_state_entry "VSS_PORT_GROUP" "${name}"
+            remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${name}"
+            remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${name}"
+        fi
+    done < "${STATE_FILE}"
+}
+
 rollback_vss()
 {
     show_header
@@ -1719,14 +1761,16 @@ rollback_vss()
         return 1
     fi
 
+    vss_reconcile_state_after_recovery "${NATIVE_STAGING_FILE}"
+
     if cluster_quorate; then
-        log_ok "VSS Recovery 完成，Cluster Quorum 正常。"
+        log_ok "VSS Recovery 完成，設定檔、Runtime Object 與 State 已同步。"
+        log_ok "Cluster Quorum 正常。"
     else
         log_error "Rollback 後 Cluster Quorum 異常，請立即檢查。"
     fi
     pause_screen
 }
-
 rollback_vds()
 {
     show_header
