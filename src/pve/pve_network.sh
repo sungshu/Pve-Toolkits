@@ -394,10 +394,10 @@ select_bridge()
         if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice == new_index)); then
             while true; do
                 read -r -p "新的 Virtual Switch 名稱：" SELECTED_BRIDGE
-                if [[ "${SELECTED_BRIDGE}" =~ ^[A-Za-z][A-Za-z0-9]{0,9}$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
+                if [[ "${SELECTED_BRIDGE}" =~ ^[A-Za-z][A-Za-z0-9_]{0,9}$ ]] && [[ ! -e "/sys/class/net/${SELECTED_BRIDGE}" ]]; then
                     return 0
                 fi
-                log_error "Bridge 名稱必須以英文字母開頭，僅能使用英文字母與數字，最多 10 字元，且目前未使用。"
+                log_error "Bridge 名稱必須以英文字母開頭，僅能使用英文字母、數字與底線，最多 10 字元，且目前未使用。"
             done
         fi
         log_error "選擇無效。"
@@ -567,36 +567,163 @@ write_vss_interfaces()
 {
     local bridge="$1" nic1="$2" nic2="$3" bond_mode="$4"
     local bond_name="" bridge_port="${nic1}"
+
     ensure_dirs
     GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
     local generated_file="${GENERATED_INTERFACES_FILE}"
     cp -a /etc/network/interfaces "${generated_file}"
+
+    # 第一版已驗證的 VSS 核心：Physical NIC → Bond（可選）→ Linux Bridge。
+    # 2.0.17 只把這個既有 CLI 生命週期包進 VMware 風格 UI，不另造一套底層網路模型。
+
     if [[ -n "${bond_mode}" ]]; then
-        bridge_port="$(awk -v bridge="${bridge}" 'BEGIN{RS=""} $0~"(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)"{n=split($0,a,"\\n");for(i=1;i<=n;i++)if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+/){sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i]);print a[i];exit}}' "${generated_file}")"
+        bridge_port="$(awk -v bridge="${bridge}" 'BEGIN{RS=""}
+            $0 ~ "(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)" {
+                n=split($0,a,"\\n")
+                for(i=1;i<=n;i++)
+                    if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+/) {
+                        sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i])
+                        print a[i]
+                        exit
+                    }
+            }' "${generated_file}")"
+
         if [[ "${bridge_port}" =~ ^bond[0-9]+$ ]]; then
             bond_name="${bridge_port}"
         else
             local n=0
-            while grep -qE "^auto bond${n}([[:space:]]|$)" "${generated_file}" 2>/dev/null; do n=$((n+1)); done
-            bond_name="bond${n}"; bridge_port="${bond_name}"
+            while grep -qE "^auto bond${n}([[:space:]]|$)" "${generated_file}" 2>/dev/null; do
+                n=$((n + 1))
+            done
+            bond_name="bond${n}"
+            bridge_port="${bond_name}"
         fi
     fi
+
+    # Bond slave NIC 必須保留為 manual，與第一版 CLI 的寫法一致。
+    for nic in "${nic1}" "${nic2}"; do
+        [[ -n "${nic}" ]] || continue
+        if ! grep -qE "^iface[[:space:]]+${nic}[[:space:]]+inet[[:space:]]+" "${generated_file}" 2>/dev/null; then
+            printf '\nauto %s\niface %s inet manual\n' "${nic}" "${nic}" >> "${generated_file}"
+        fi
+    done
+
     local temp
     temp="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
-    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" -v nic1="${nic1}" -v nic2="${nic2}" -v bond_mode="${bond_mode}" '
-        BEGIN{RS="";ORS="\n\n";bridge_found=0;bond_found=0}
+
+    awk -v bridge="${bridge}" -v bridge_port="${bridge_port}" -v bond="${bond_name}" \
+        -v nic1="${nic1}" -v nic2="${nic2}" -v bond_mode="${bond_mode}" '
+        BEGIN {
+            RS=""
+            ORS="\\n\\n"
+            bridge_found=0
+            bond_found=0
+        }
         {
-            is_bridge=($0~"(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
-            is_bond=(bond!="" && $0~"(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)")
-            if(is_bridge){bridge_found=1;n=split($0,a,"\n");out="";for(i=1;i<=n;i++){line=a[i];if(line~/^[[:space:]]*bridge-ports[[:space:]]+/)line="    bridge-ports " bridge_port;out=out(out==""?"":"\n")line}print out;next}
-            if(is_bond){bond_found=1;n=split($0,a,"\n");out="";for(i=1;i<=n;i++){line=a[i];if(line~/^[[:space:]]*bond-slaves[[:space:]]+/)line="    bond-slaves " nic1 " " nic2;else if(line~/^[[:space:]]*bond-miimon[[:space:]]+/)line="    bond-miimon 100";else if(line~/^[[:space:]]*bond-mode[[:space:]]+/)line="    bond-mode " bond_mode;else if(line~/^[[:space:]]*bond-primary[[:space:]]+/){if(bond_mode=="active-backup")line="    bond-primary " nic1;else line=""}if(line!="")out=out(out==""?"":"\n")line}print out;next}
+            is_bridge=($0 ~ "(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)")
+            is_bond=(bond!="" && $0 ~ "(^|\\n)auto[[:space:]]+" bond "[[:space:]]*(\\n|$)")
+
+            if (is_bridge) {
+                bridge_found=1
+                n=split($0,a,"\\n")
+                out=""
+                have_ports=0
+                have_vlan_aware=0
+                have_vlan_vids=0
+
+                for(i=1;i<=n;i++) {
+                    line=a[i]
+                    if(line ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
+                        line="    bridge-ports " bridge_port
+                        have_ports=1
+                    }
+                    if(line ~ /^[[:space:]]*bridge-vlan-aware[[:space:]]+/) {
+                        line="    bridge-vlan-aware yes"
+                        have_vlan_aware=1
+                    }
+                    if(line ~ /^[[:space:]]*bridge-vids[[:space:]]+/) {
+                        line="    bridge-vids 2-4094"
+                        have_vlan_vids=1
+                    }
+                    out=out (out=="" ? "" : "\\n") line
+                }
+
+                if(!have_ports) out=out "\\n    bridge-ports " bridge_port
+                if(!have_vlan_aware) out=out "\\n    bridge-vlan-aware yes"
+                if(!have_vlan_vids) out=out "\\n    bridge-vids 2-4094"
+
+                print out
+                next
+            }
+
+            if (is_bond) {
+                bond_found=1
+                n=split($0,a,"\\n")
+                out=""
+                have_slaves=0
+                have_miimon=0
+                have_mode=0
+                have_primary=0
+
+                for(i=1;i<=n;i++) {
+                    line=a[i]
+                    if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) {
+                        line="    bond-slaves " nic1 " " nic2
+                        have_slaves=1
+                    }
+                    if(line ~ /^[[:space:]]*bond-miimon[[:space:]]+/) {
+                        line="    bond-miimon 100"
+                        have_miimon=1
+                    }
+                    if(line ~ /^[[:space:]]*bond-mode[[:space:]]+/) {
+                        line="    bond-mode " bond_mode
+                        have_mode=1
+                    }
+                    if(line ~ /^[[:space:]]*bond-primary[[:space:]]+/) {
+                        if(bond_mode=="active-backup") {
+                            line="    bond-primary " nic1
+                            have_primary=1
+                        } else {
+                            line=""
+                        }
+                    }
+                    if(line!="") out=out (out=="" ? "" : "\\n") line
+                }
+
+                if(!have_slaves) out=out "\\n    bond-slaves " nic1 " " nic2
+                if(!have_miimon) out=out "\\n    bond-miimon 100"
+                if(!have_mode) out=out "\\n    bond-mode " bond_mode
+                if(bond_mode=="active-backup" && !have_primary) out=out "\\n    bond-primary " nic1
+
+                print out
+                next
+            }
+
             print
         }
-        END{
-            if(!bridge_found){print "auto " bridge;print "iface " bridge " inet manual";print "    bridge-ports " bridge_port;print "    bridge-stp off";print "    bridge-fd 0";print "    bridge-vlan-aware yes";print "    bridge-vids 2-4094"}
-            if(bond!=""&&!bond_found){print "auto " bond;print "iface " bond " inet manual";print "    bond-slaves " nic1 " " nic2;print "    bond-miimon 100";print "    bond-mode " bond_mode;if(bond_mode=="active-backup")print "    bond-primary " nic1}
+        END {
+            if(!bridge_found) {
+                print "auto " bridge
+                print "iface " bridge " inet manual"
+                print "    bridge-ports " bridge_port
+                print "    bridge-stp off"
+                print "    bridge-fd 0"
+                print "    bridge-vlan-aware yes"
+                print "    bridge-vids 2-4094"
+            }
+
+            if(bond!="" && !bond_found) {
+                print "auto " bond
+                print "iface " bond " inet manual"
+                print "    bond-slaves " nic1 " " nic2
+                print "    bond-miimon 100"
+                print "    bond-mode " bond_mode
+                if(bond_mode=="active-backup")
+                    print "    bond-primary " nic1
+            }
         }
     ' "${generated_file}" > "${temp}"
+
     install -m 0644 "${temp}" "${generated_file}"
     rm -f "${temp}"
 }
