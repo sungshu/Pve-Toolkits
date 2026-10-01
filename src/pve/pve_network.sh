@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.18
+# Version: 2.0.19
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.18"
+SCRIPT_VERSION="2.0.19"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -515,7 +515,10 @@ select_bond_mode()
                 ;;
             0)
                 BOND_MODE=""
-                return 0
+                BOND_PRIMARY_NIC=""
+                BOND_XMIT_HASH_POLICY=""
+                BOND_LACP_RATE=""
+                return 1
                 ;;
             *) log_error "選擇無效，請輸入 0～7。" ;;
         esac
@@ -1349,7 +1352,11 @@ vss_uplink_add()
         BOND_XMIT_HASH_POLICY=""
         BOND_LACP_RATE=""
     else
-        select_bond_mode
+        if ! select_bond_mode; then
+            log_info "已取消 Linux Bond 設定。"
+            pause_screen
+            return 0
+        fi
     fi
     if nic_used_elsewhere "${first_nic}" "${bridge}"; then
         log_error "NIC ${first_nic} 已被其他 Bridge / Bond 使用，停止 Uplink 變更。"
