@@ -473,12 +473,12 @@ select_bond_mode()
 select_bond_hash_policy()
 {
     local choice
-    echo ""
-    echo "Xmit Hash Policy"
-    echo "  1) layer2"
-    echo "  2) layer2+3"
-    echo "  3) layer3+4"
-    echo ""
+    echo "" >&2
+    echo "Xmit Hash Policy" >&2
+    echo "  1) layer2" >&2
+    echo "  2) layer2+3" >&2
+    echo "  3) layer3+4" >&2
+    echo "" >&2
     while true; do
         read -r -p "請選擇：" choice
         case "${choice}" in
@@ -493,11 +493,11 @@ select_bond_hash_policy()
 select_lacp_rate()
 {
     local choice
-    echo ""
-    echo "LACP Rate"
-    echo "  1) slow"
-    echo "  2) fast"
-    echo ""
+    echo "" >&2
+    echo "LACP Rate" >&2
+    echo "  1) slow" >&2
+    echo "  2) fast" >&2
+    echo "" >&2
     while true; do
         read -r -p "請選擇：" choice
         case "${choice}" in
