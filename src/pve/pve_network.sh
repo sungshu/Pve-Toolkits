@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.6
+# Version: 2.0.7
 # Updated: 2026-10-01
 
-SCRIPT_VERSION="2.0.6"
+SCRIPT_VERSION="2.0.7"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
 NETWORK_SCRIPT_PATH="/root/pve_network.sh"
+GENERATED_INTERFACES_FILE=""
 NETWORK_UPDATE_GUARD="${PVE_NETWORK_UPDATED:-0}"
 
 GREEN='\033[0;32m'
@@ -26,11 +27,8 @@ STATE_DIR="${BASE_DIR}/state"
 VSS_DIR="${STATE_DIR}/vss"
 VDS_DIR="${STATE_DIR}/vds"
 STATE_FILE="${STATE_DIR}/objects.conf"
-PLAN_DIR="${BASE_DIR}/plans"
 BACKUP_DIR="${BASE_DIR}/backup"
-CHANGE_DIR="${BASE_DIR}/changes"
 RECOVERY_DIR="${BASE_DIR}/recovery"
-NATIVE_STAGING_FILE="/etc/network/interfaces.new"
 
 log_info()  { echo -e "${CYAN}[ $(date '+%H:%M:%S') ] INFO${NC}  $*"; }
 log_ok()    { echo -e "${GREEN}[ $(date '+%H:%M:%S') ] OK${NC}    $*"; }
@@ -447,7 +445,7 @@ select_second_nic()
 
 ensure_dirs()
 {
-    mkdir -p "${BASELINE_DIR}" "${VSS_DIR}" "${VDS_DIR}" "${STATE_DIR}" "${PLAN_DIR}" "${BACKUP_DIR}" "${CHANGE_DIR}" "${RECOVERY_DIR}"
+    mkdir -p "${BASELINE_DIR}" "${VSS_DIR}" "${VDS_DIR}" "${STATE_DIR}" "${BACKUP_DIR}" "${RECOVERY_DIR}"
     touch "${STATE_FILE}"
 }
 
@@ -528,7 +526,8 @@ write_vss_interfaces()
     local temp
 
     ensure_dirs
-    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+    GENERATED_INTERFACES_FILE="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    cp -a /etc/network/interfaces "${GENERATED_INTERFACES_FILE}"
 
     if [[ -n "${bond_mode}" ]]; then
         bond_name="$(awk '/^auto bond[0-9]+$/ {print $2; exit}' /etc/network/interfaces 2>/dev/null || true)"
@@ -551,7 +550,7 @@ write_vss_interfaces()
             if (bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") keep=0
             if (keep) print
         }
-    ' "${NATIVE_STAGING_FILE}" > "${temp}"
+    ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
 
     {
         echo "auto ${bridge}"
@@ -578,7 +577,7 @@ write_vss_interfaces()
         fi
     } >> "${temp}"
 
-    install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+    install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
     rm -f "${temp}"
 }
 
@@ -594,36 +593,10 @@ create_change_backup()
     ensure_dirs
     mkdir -p "${target}"
     cp -a /etc/network/interfaces "${target}/interfaces"
-    [[ -f "${NATIVE_STAGING_FILE}" ]] && cp -a "${NATIVE_STAGING_FILE}" "${target}/interfaces.new"
     ip -details address show > "${target}/ip-address"
     ip route show table all > "${target}/ip-route"
     ip -details link show > "${target}/ip-link"
     pvecm status > "${target}/cluster-status" 2>&1 || true
-}
-
-write_change_plan()
-{
-    local change_id="$1"
-    local plan="${PLAN_DIR}/${change_id}"
-    mkdir -p "${plan}"
-    cp -a /etc/network/interfaces "${plan}/current"
-    [[ -f "${NATIVE_STAGING_FILE}" ]] && cp -a "${NATIVE_STAGING_FILE}" "${plan}/proposed"
-    [[ -f "${plan}/proposed" ]] && diff -u "${plan}/current" "${plan}/proposed" > "${plan}/diff" || true
-}
-
-validate_proposed_interfaces()
-{
-    [[ -f "${NATIVE_STAGING_FILE}" ]] || {
-        log_error "找不到 Proposed Configuration：${NATIVE_STAGING_FILE}"
-        return 1
-    }
-    if command -v ifquery >/dev/null 2>&1; then
-        if ! ifquery --list -i "${NATIVE_STAGING_FILE}" >/dev/null 2>&1; then
-            log_error "Proposed Configuration 語法驗證失敗。"
-            return 1
-        fi
-    fi
-    return 0
 }
 
 restore_change_backup()
@@ -640,21 +613,32 @@ restore_change_backup()
     cp -a "${source}" "${RECOVERY_DIR}/${change_id}/interfaces.restored"
 }
 
-apply_proposed_interfaces()
+apply_interfaces_file()
 {
     local change_id="$1"
-    validate_proposed_interfaces || return 1
+    local source="$2"
+
+    [[ -f "${source}" ]] || {
+        log_error "找不到要套用的網路設定：${source}"
+        return 1
+    }
+
+    if command -v ifquery >/dev/null 2>&1; then
+        if ! ifquery --list -i "${source}" >/dev/null 2>&1; then
+            log_error "網路設定語法驗證失敗。"
+            return 1
+        fi
+    fi
+
     create_change_backup "${change_id}"
-    write_change_plan "${change_id}"
-    log_step "Apply Proposed Configuration：${change_id}"
-    install -m 0644 "${NATIVE_STAGING_FILE}" /etc/network/interfaces
+    log_step "套用網路設定：${change_id}"
+    install -m 0644 "${source}" /etc/network/interfaces
     if ! ifreload -a; then
-        log_error "Apply 失敗，開始 Recovery：${change_id}"
+        log_error "套用失敗，開始 Recovery：${change_id}"
         restore_change_backup "${change_id}" || true
         return 1
     fi
-    mkdir -p "${CHANGE_DIR}/${change_id}"
-    printf 'CHANGE_ID=%s\nTIMESTAMP=%s\nSTATUS=APPLIED\n' "${change_id}" "$(date '+%Y-%m-%d %H:%M:%S %z')" > "${CHANGE_DIR}/${change_id}/transaction"
+    log_ok "網路設定套用完成：${change_id}"
 }
 
 validate_interfaces_syntax()
@@ -749,10 +733,11 @@ validate_network_after_change()
 
 apply_interfaces()
 {
+    local source="$1"
     local change_id
     change_id="$(create_change_id)"
-    [[ -f "${NATIVE_STAGING_FILE}" ]] || { log_error "找不到 Proposed Configuration。"; return 1; }
-    apply_proposed_interfaces "${change_id}"
+    [[ -f "${source}" ]] || { log_error "找不到要套用的網路設定。"; return 1; }
+    apply_interfaces_file "${change_id}" "${source}"
 }
 
 vss_create()
@@ -822,9 +807,11 @@ vss_create()
     save_interfaces_copy "${VSS_DIR}/interfaces.before"
     network_snapshot "${VSS_DIR}/network.before"
 
-    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+    local generated_file
+    generated_file="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    cp -a /etc/network/interfaces "${generated_file}"
 
-    cat >> "${NATIVE_STAGING_FILE}" <<EOF
+    cat >> "${generated_file}" <<EOF
 
 auto ${bridge}
 iface ${bridge} inet manual
@@ -835,13 +822,14 @@ iface ${bridge} inet manual
     bridge-vids 2-4094
 EOF
 
-    if ! apply_interfaces; then
+    if ! apply_interfaces "${generated_file}"; then
         log_error "VSS ${bridge} 建立 / 套用失敗。"
         cp -a "${VSS_DIR}/interfaces.before" /etc/network/interfaces
         ifreload -a || true
         pause_screen
         return 1
     fi
+    rm -f "${generated_file}"
 
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS ${bridge} 驗證失敗。"
@@ -960,13 +948,15 @@ vss_uplink_add()
         return 1
     fi
 
-    if ! apply_interfaces; then
+    if ! apply_interfaces "${GENERATED_INTERFACES_FILE}"; then
+        rm -f "${GENERATED_INTERFACES_FILE}"
         log_error "VSS Uplink 套用失敗，立即嘗試還原。"
         cp -a "${VSS_DIR}/interfaces.before-uplink" /etc/network/interfaces
         ifreload -a || true
         pause_screen
         return 1
     fi
+    rm -f "${GENERATED_INTERFACES_FILE}"
 
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS Uplink 驗證失敗。"
@@ -1434,9 +1424,11 @@ vss_port_group_create()
 
     if ! confirm "確認建立？"; then pause_screen; return 0; fi
 
-    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+    local generated_file
+    generated_file="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    cp -a /etc/network/interfaces "${generated_file}"
 
-    cat >> "${NATIVE_STAGING_FILE}" <<EOF
+    cat >> "${generated_file}" <<EOF
 
 auto ${vlan_dev}
 iface ${vlan_dev} inet manual
@@ -1450,11 +1442,13 @@ EOF
 
     local change_id
     change_id="$(create_change_id)"
-    if ! apply_proposed_interfaces "${change_id}"; then
+    if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
+        rm -f "${generated_file}"
         log_error "VSS Port Group ${vnet} 建立失敗，已嘗試 Recovery。"
         pause_screen
         return 1
     fi
+    rm -f "${generated_file}"
 
     save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
     save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
@@ -1541,7 +1535,9 @@ vss_port_group_delete()
         if ! confirm "確認刪除 VSS Port Group ${name}？"; then pause_screen; return 0; fi
     fi
 
-    cp -a /etc/network/interfaces "${NATIVE_STAGING_FILE}"
+    local generated_file
+    generated_file="$(mktemp /tmp/pve-network-interfaces.XXXXXX)"
+    cp -a /etc/network/interfaces "${generated_file}"
     local temp target_name
     for target_name in "${targets[@]}"; do
         temp="$(mktemp /etc/network/interfaces.pve-network.XXXXXX)"
@@ -1552,8 +1548,8 @@ vss_port_group_delete()
                 if ($0 ~ "(^|\n)auto[[:space:]]+" pg "[[:space:]]*(\n|$)") keep=0
                 if (keep) print
             }
-        ' "${NATIVE_STAGING_FILE}" > "${temp}"
-        install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+        ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
+        install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
         rm -f "${temp}"
     done
 
@@ -1588,19 +1584,21 @@ vss_port_group_delete()
                     if ($0 ~ "(^|\n)auto[[:space:]]+" vlan_dev "[[:space:]]*(\n|$)") keep=0
                     if (keep) print
                 }
-            ' "${NATIVE_STAGING_FILE}" > "${temp}"
-            install -m 0644 "${temp}" "${NATIVE_STAGING_FILE}"
+            ' "${GENERATED_INTERFACES_FILE}" > "${temp}"
+            install -m 0644 "${temp}" "${GENERATED_INTERFACES_FILE}"
             rm -f "${temp}"
         fi
     done
 
     local change_id
     change_id="$(create_change_id)"
-    if ! apply_proposed_interfaces "${change_id}"; then
+    if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
+        rm -f "${generated_file}"
         log_error "VSS Port Group 刪除失敗，已嘗試 Recovery。"
         pause_screen
         return 1
     fi
+    rm -f "${generated_file}"
 
     for target_name in "${targets[@]}"; do
         remove_state_entry "VSS_PORT_GROUP" "${target_name}"
@@ -1740,7 +1738,7 @@ show_current_network()
 
 vss_reconcile_state_after_recovery()
 {
-    local target="${1:-${NATIVE_STAGING_FILE}}"
+    local target="${1:-/etc/network/interfaces}"
     local name vlan_dev bridge
 
     [[ -f "${target}" ]] || return 0
@@ -1806,16 +1804,14 @@ rollback_vss()
     local change_id
     change_id="$(create_change_id)"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.current-before-rollback"
-    cp -a "${VSS_DIR}/interfaces.before" "${NATIVE_STAGING_FILE}"
-
-    if ! apply_proposed_interfaces "${change_id}"; then
+    if ! apply_interfaces_file "${change_id}" "${VSS_DIR}/interfaces.before"; then
         log_error "VSS Recovery 套用失敗。"
         log_error "目前變更前版本仍保存於：${VSS_DIR}/interfaces.current-before-rollback"
         pause_screen
         return 1
     fi
 
-    vss_reconcile_state_after_recovery "${NATIVE_STAGING_FILE}"
+    vss_reconcile_state_after_recovery "${VSS_DIR}/interfaces.before"
 
     if cluster_quorate; then
         log_ok "VSS Recovery 完成，設定檔、Runtime Object 與 State 已同步。"
@@ -1921,9 +1917,7 @@ rollback_baseline()
     local change_id
     change_id="$(create_change_id)"
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
-    cp -a "${BASELINE_DIR}/interfaces.orig" "${NATIVE_STAGING_FILE}"
-
-    if ! apply_proposed_interfaces "${change_id}"; then
+    if ! apply_interfaces_file "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
         log_error "Baseline Recovery 套用失敗。"
         pause_screen
         return 1
@@ -2029,59 +2023,6 @@ network_objects_menu()
     done
 }
 
-change_management_menu()
-{
-    while true; do
-        show_header
-        echo "============================================================"
-        echo " Change Management"
-        echo "============================================================"
-        echo ""
-        echo "  1) 查看 Current / Proposed / Diff"
-        echo "  2) Dry-run / Validate"
-        echo "  3) Change History"
-        echo "  0) 返回"
-        echo ""
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1)
-                echo ""
-                if [[ -f "${NATIVE_STAGING_FILE}" ]]; then
-                    echo "Current / Proposed Diff"
-                    echo "------------------------------------------------------------"
-                    diff -u /etc/network/interfaces "${NATIVE_STAGING_FILE}" || true
-                else
-                    echo "目前沒有 Proposed Configuration。"
-                fi
-                pause_screen
-                ;;
-            2)
-                echo ""
-                if validate_proposed_interfaces; then
-                    echo "Dry-run / Validate：成功"
-                else
-                    echo "Dry-run / Validate：失敗"
-                fi
-                pause_screen
-                ;;
-            3)
-                echo ""
-                echo "Change History"
-                echo "------------------------------------------------------------"
-                if [[ -d "${CHANGE_DIR}" ]]; then
-                    find "${CHANGE_DIR}" -mindepth 2 -maxdepth 2 -type f -name transaction -print 2>/dev/null | sort
-                else
-                    echo "目前沒有 Change History。"
-                fi
-                pause_screen
-                ;;
-            0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
-        esac
-    done
-}
-
 main_menu()
 {
     while true; do
@@ -2099,14 +2040,11 @@ main_menu()
         echo "     │  └─ VMkernel Adapter / Management"
         echo "     └─ Distributed Virtual Switch / VDS"
         echo "        └─ Port Group"
-        echo "  2) Change Management"
-        echo "     ├─ Diff / Dry-run"
-        echo "     └─ Change History"
-        echo "  3) Backup / Recovery"
+        echo "  2) Backup / Recovery"
         echo "     ├─ Baseline"
         echo "     ├─ Backup History"
         echo "     └─ Recovery"
-        echo "  4) Network Status"
+        echo "  3) Network Status"
         echo "     ├─ Current Configuration"
         echo "     ├─ Topology"
         echo "     ├─ Cluster"
@@ -2120,14 +2058,13 @@ main_menu()
         read -r -p "請選擇：" choice
         case "${choice}" in
             1) network_objects_menu ;;
-            2) change_management_menu ;;
-            3) rollback_menu ;;
-            4) show_current_network ;;
+            2) rollback_menu ;;
+            3) show_current_network ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
                 ;;
-            *) log_error "選擇無效，請輸入 0～4。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入 0～3。"; sleep 1 ;;
         esac
     done
 }
