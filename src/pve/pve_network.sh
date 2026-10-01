@@ -448,7 +448,6 @@ select_bond_mode()
             1) BOND_MODE="balance-rr"; return 0 ;;
             2)
                 BOND_MODE="active-backup"
-                read -r -p "Primary NIC 將於選擇成員後設定。"
                 return 0
                 ;;
             3)
@@ -1152,6 +1151,7 @@ EOF
 
 vss_uplink_add()
 {
+    local uplink_type="${1:-bond}"
     show_header
     echo "============================================================"
     echo " Physical Uplink 管理 - 新增 / 設定 Uplink"
@@ -1203,12 +1203,19 @@ vss_uplink_add()
         return 0
     fi
     local first_nic="${SELECTED_NIC}"
+
+    if [[ "${uplink_type}" == "single" ]]; then
+        BOND_MODE=""
+        BOND_XMIT_HASH_POLICY=""
+        BOND_LACP_RATE=""
+    else
+        select_bond_mode
+    fi
     if nic_used_elsewhere "${first_nic}" "${bridge}"; then
         log_error "NIC ${first_nic} 已被其他 Bridge / Bond 使用，停止 Uplink 變更。"
         pause_screen
         return 0
     fi
-    select_bond_mode
     local second_nic=""
     if [[ -n "${BOND_MODE}" ]]; then
         select_second_nic "${first_nic}"
@@ -1293,6 +1300,8 @@ vss_uplink_add()
         save_state "VSS" "nic2" "${second_nic}"
     fi
     save_state "VSS" "bond_mode" "${BOND_MODE:-none}"
+    save_state "VSS" "bond_hash" "${BOND_XMIT_HASH_POLICY:-none}"
+    save_state "VSS" "bond_lacp_rate" "${BOND_LACP_RATE:-none}"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.vss"
 
     log_ok "Physical Uplink 設定生效完成。"
@@ -1397,13 +1406,10 @@ vss_physical_uplink_menu()
         read -r -p "請選擇：" choice
         case "${choice}" in
             1)
-                BOND_MODE=""
-                BOND_XMIT_HASH_POLICY=""
-                BOND_LACP_RATE=""
-                vss_uplink_add
+                vss_uplink_add single
                 ;;
             2)
-                vss_uplink_add
+                vss_uplink_add bond
                 ;;
             3)
                 vss_show
