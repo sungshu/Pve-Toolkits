@@ -1123,9 +1123,25 @@ state_has()
 remove_state_entry()
 {
     local type="$1" key="$2"
+    local temp
+
     [[ -f "${STATE_FILE}" ]] || return 0
-    awk -F '\t' -v t="${type}" -v k="${key}" '!( $1==t && $2==k )' "${STATE_FILE}" > "${STATE_FILE}.tmp"
-    mv -f "${STATE_FILE}.tmp" "${STATE_FILE}"
+    temp="$(mktemp "${STATE_FILE}.tmp.XXXXXX")" || {
+        log_error "無法建立 State 暫存檔：${STATE_FILE}"
+        return 1
+    }
+
+    if ! awk -F '\t' -v t="${type}" -v k="${key}" '!( $1==t && $2==k )' "${STATE_FILE}" > "${temp}"; then
+        rm -f "${temp}"
+        log_error "無法整理 State：${STATE_FILE}"
+        return 1
+    fi
+    if ! mv -f "${temp}" "${STATE_FILE}"; then
+        rm -f "${temp}"
+        log_error "無法提交 State：${STATE_FILE}"
+        return 1
+    fi
+    return 0
 }
 
 cluster_guard()
@@ -2238,7 +2254,11 @@ EOF
          ! save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}" ||
          ! save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"; then
         log_error "VSS Port Group 已套用，但 State 寫入失敗：${vnet}"
-        log_error "請勿再次建立同名 Port Group；請先確認 ${STATE_FILE}。"
+        if restore_change_backup "${change_id}"; then
+            log_ok "VSS Port Group State / Runtime 已 Recovery：${vnet}"
+        else
+            log_error "VSS Port Group State / Runtime Recovery 失敗：${vnet}"
+        fi
         pause_screen
         return 1
     fi
@@ -2305,8 +2325,17 @@ vds_port_group_create()
         pause_screen
         return 1
     fi
-    save_state "PORT_GROUP" "${vnet}" "${tag}"
-    save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"
+    if ! save_state "PORT_GROUP" "${vnet}" "${tag}" ||
+         ! save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"; then
+        log_error "VDS Port Group 已建立，但 State 寫入失敗：${vnet}"
+        if vds_delete_vnet "${vnet}" && vds_apply && ! pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+            log_ok "VDS Port Group State / Runtime Recovery 完成：${vnet}"
+        else
+            log_error "VDS Port Group State / Runtime Recovery 不完整：${vnet}"
+        fi
+        pause_screen
+        return 1
+    fi
     log_ok "VDS Port Group 建立完成：${vnet} / VLAN ${tag}"
     pause_screen
 }
@@ -2368,8 +2397,12 @@ vds_port_group_delete()
         pause_screen
         return 1
     fi
-    remove_state_entry "PORT_GROUP" "${vnet}"
-    remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
+    if ! remove_state_entry "PORT_GROUP" "${vnet}" ||
+       ! remove_state_entry "PORT_GROUP_ZONE" "${vnet}"; then
+        log_error "VDS Port Group Runtime 已刪除，但 State 清理失敗：${vnet}"
+        pause_screen
+        return 1
+    fi
     log_ok "VDS Port Group 已刪除：${vnet}"
     pause_screen
 }
@@ -2518,7 +2551,7 @@ vss_port_group_delete()
     local -a validation_bridges=()
     local target_name validation_bridge bridge bridge_seen
     for target_name in "${targets[@]}"; do
-        validation_bridge="$(awk -F "\t" -v n="${target_name}" '\$1=="VSS_PORT_GROUP_BRIDGE" && \$2==n {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        validation_bridge="$(awk -F "\t" -v n="${target_name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
         [[ -n "${validation_bridge}" ]] || continue
 
         bridge_seen=0
@@ -2556,13 +2589,15 @@ vss_port_group_delete()
             target_bridge="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
             target_vlan_dev="${target_bridge}.${target_vlan}"
         fi
-        if ip link show "${target_name}" >/dev/null 2>&1; then
-            log_error "VSS Port Group Delete 後 Runtime Bridge 仍存在：${target_name}"
-            pause_screen
-            return 1
-        fi
-        if [[ -n "${target_vlan_dev}" ]] && ip link show "${target_vlan_dev}" >/dev/null 2>&1; then
-            log_error "VSS Port Group Delete 後 VLAN Interface 仍存在：${target_vlan_dev}"
+        if ip link show "${target_name}" >/dev/null 2>&1 ||
+           { [[ -n "${target_vlan_dev}" ]] && ip link show "${target_vlan_dev}" >/dev/null 2>&1; }; then
+            log_error "VSS Port Group Delete 後 Runtime Object 仍存在：${target_name}"
+            log_error "開始 Recovery。"
+            if restore_change_backup "${change_id}"; then
+                log_ok "VSS Port Group Delete Runtime Recovery 完成。"
+            else
+                log_error "VSS Port Group Delete Runtime Recovery 失敗。"
+            fi
             pause_screen
             return 1
         fi
