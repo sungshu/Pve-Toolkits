@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.21
-# Updated: 2026-10-01
+# Version: 2.0.22
+# Updated: 2026-10-06
 
-SCRIPT_VERSION="2.0.21"
+SCRIPT_VERSION="2.0.22"
 UPDATED="2026-10-01"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -657,9 +657,11 @@ create_baseline()
     echo "  - Cluster Nodes"
     echo "  - IP Address"
     echo "  - Routing"
+    echo "  - PVE NETWORK PRO State"
     echo ""
 
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.orig"
+    cp -a "${STATE_FILE}" "${BASELINE_DIR}/objects.conf.orig"
     pvecm status > "${BASELINE_DIR}/pvecm-status.orig" 2>&1 || true
     pvecm nodes > "${BASELINE_DIR}/pvecm-nodes.orig" 2>&1 || true
     ip -details address show > "${BASELINE_DIR}/ip-address.orig"
@@ -923,7 +925,11 @@ write_vss_interfaces()
 
 create_change_id()
 {
-    printf 'CHG-%s' "$(date '+%Y%m%d-%H%M%S')"
+    # Change ID 必須避免同秒內多次操作互相覆蓋 Backup。
+    local timestamp suffix
+    timestamp="$(date '+%Y%m%d-%H%M%S-%N')"
+    suffix="${RANDOM}${RANDOM}"
+    printf 'CHG-%s-%s' "${timestamp}" "${suffix}"
 }
 
 create_change_backup()
@@ -1090,6 +1096,7 @@ validate_network_after_change()
 {
     local bridge="$1"
     local before_cluster after_cluster
+    local management_dev management_ip gateway
 
     log_step "驗證網路與 Cluster 狀態"
 
@@ -1103,6 +1110,26 @@ validate_network_after_change()
         return 1
     fi
 
+    get_management_info
+    management_dev="${DEV_WITH_GW:-}"
+    management_ip="${CURRENT_IP:-}"
+    gateway="${CURRENT_GW:-}"
+
+    if [[ -z "${management_dev}" || -z "${management_ip}" ]]; then
+        log_error "管理網路介面或 IPv4 位址無法確認。"
+        return 1
+    fi
+
+    if [[ -z "${gateway}" ]]; then
+        log_error "Default Gateway 無法確認。"
+        return 1
+    fi
+
+    if ! ip route show default 2>/dev/null | grep -Fq "default via ${gateway} dev ${management_dev}"; then
+        log_error "Default Route 與管理介面不一致：${management_dev} / ${gateway}"
+        return 1
+    fi
+
     before_cluster="$(cluster_status_text)"
     if ! cluster_quorate; then
         log_error "變更後 Cluster Quorum 不正常：${before_cluster}"
@@ -1111,6 +1138,8 @@ validate_network_after_change()
     after_cluster="$(cluster_status_text)"
 
     log_ok "Bridge ${bridge} 驗證完成。"
+    log_ok "Management：${management_dev} / ${management_ip}"
+    log_ok "Default Gateway：${gateway}"
     log_ok "Cluster：${after_cluster}"
     return 0
 }
@@ -1287,8 +1316,15 @@ EOF
     GENERATED_INTERFACES_FILE=""
 
     if ! validate_network_after_change "${bridge}"; then
-        log_error "VSS ${bridge} 驗證失敗。"
-        echo "變更前設定保存於：${VSS_DIR}/interfaces.before"
+        log_error "VSS ${bridge} 驗證失敗，開始 Recovery。"
+        local recovery_change_id
+        recovery_change_id="$(create_change_id)"
+        if restore_change_backup "${recovery_change_id}" "${VSS_DIR}/interfaces.before"; then
+            log_ok "VSS ${bridge} 已依變更前設定完成 Recovery。"
+        else
+            log_error "VSS ${bridge} 自動 Recovery 失敗。"
+            log_error "變更前設定保存於：${VSS_DIR}/interfaces.before"
+        fi
         pause_screen
         return 1
     fi
@@ -2525,7 +2561,7 @@ rollback_baseline()
 
     local change_id
     change_id="$(create_change_id)"
-    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date +%Y%m%d%H%M%S)"
+    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date '+%Y%m%d-%H%M%S-%N')"
 
     # Recovery 必須繞過一般 apply_interfaces_file() 的 Pending Guard，
     # 否則最後救援機制會在網路故障時被自己阻擋。
@@ -2534,6 +2570,16 @@ rollback_baseline()
         log_error "目前網路設定未宣告為 Recovery 成功，請檢查 /etc/network/interfaces 與 Runtime 網路狀態。"
         pause_screen
         return 0
+    fi
+
+    # 新版 Baseline 同時保存 Tool State；Recovery 後必須讓 State 回到同一時間點。
+    # 舊版 Baseline 若沒有 objects.conf.orig，不自行猜測歷史 State。
+    if [[ -f "${BASELINE_DIR}/objects.conf.orig" ]]; then
+        cp -a "${BASELINE_DIR}/objects.conf.orig" "${STATE_FILE}"
+        log_ok "PVE NETWORK PRO State 已同步還原。"
+    else
+        log_error "此 Baseline 沒有 objects.conf.orig，無法安全還原歷史 State。"
+        log_error "目前 State 保留不變，請依 Baseline 設定人工確認 Tool-owned 物件。"
     fi
 
     if cluster_quorate; then
