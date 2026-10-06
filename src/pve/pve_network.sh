@@ -1953,6 +1953,7 @@ vds_verify_vnet()
         return 1
     fi
 }
+# VDS VNet existence check：此函式必須保持在函式作用域內，不得在啟動階段執行參數驗證。
 port_group_exists_sdn()
 {
     local vnet="$1"
