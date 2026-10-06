@@ -611,13 +611,8 @@ ensure_dirs()
 
 baseline_exists()
 {
-    [[ -f "${BASELINE_DIR}/interfaces.orig" && \
-       -f "${BASELINE_DIR}/pvecm-status.orig" && \
-       -f "${BASELINE_DIR}/pvecm-nodes.orig" && \
-       -f "${BASELINE_DIR}/ip-address.orig" && \
-       -f "${BASELINE_DIR}/ip-route.orig" ]]
+    [[ -f "${BASELINE_DIR}/interfaces.orig" &&        -f "${BASELINE_DIR}/objects.conf.orig" &&        -f "${BASELINE_DIR}/pvecm-status.orig" &&        -f "${BASELINE_DIR}/pvecm-nodes.orig" &&        -f "${BASELINE_DIR}/ip-address.orig" &&        -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
-
 network_backup_exists()
 {
     baseline_exists && return 0
@@ -1097,7 +1092,7 @@ save_state()
     }
 
     if [[ -f "${STATE_FILE}" ]]; then
-        if ! awk -F '\t' -v t="${type}" -v k="${key}" '!(\$1==t && \$2==k)' "${STATE_FILE}" > "${temp}"; then
+        if ! awk -F '\t' -v t="${type}" -v k="${key}" '!($1==t && $2==k)' "${STATE_FILE}" > "${temp}"; then
             rm -f "${temp}"
             log_error "無法整理既有 State：${STATE_FILE}"
             return 1
@@ -1159,6 +1154,27 @@ network_snapshot()
         echo "===== links ====="
         ip -details link show
     } > "${file}"
+}
+
+validate_vss_port_group_runtime()
+{
+    local port_group="$1"
+    local vlan_dev="$2"
+
+    if ! ip link show "${port_group}" >/dev/null 2>&1; then
+        log_error "VSS Port Group Runtime Bridge 不存在：${port_group}"
+        return 1
+    fi
+    if ! ip link show "${vlan_dev}" >/dev/null 2>&1; then
+        log_error "VSS Port Group VLAN Interface 不存在：${vlan_dev}"
+        return 1
+    fi
+    if ! ip link show "${port_group}" | grep -q 'state UP\|state UNKNOWN'; then
+        log_error "VSS Port Group Runtime Bridge 狀態異常：${port_group}"
+        return 1
+    fi
+    log_ok "VSS Port Group Runtime 驗證完成：${port_group} / ${vlan_dev}"
+    return 0
 }
 
 validate_network_after_change()
@@ -2207,9 +2223,25 @@ EOF
         return 1
     fi
 
-    save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
-    save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
-    save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"
+    if ! validate_vss_port_group_runtime "${vnet}" "${vlan_dev}"; then
+        log_error "VSS Port Group ${vnet} Runtime Object 驗證失敗，開始 Recovery。"
+        if restore_change_backup "${change_id}"; then
+            log_ok "VSS Port Group ${vnet} Runtime Recovery 完成。"
+        else
+            log_error "VSS Port Group ${vnet} Runtime Recovery 失敗。"
+        fi
+        pause_screen
+        return 1
+    fi
+
+    if ! save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}" ||
+         ! save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}" ||
+         ! save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"; then
+        log_error "VSS Port Group 已套用，但 State 寫入失敗：${vnet}"
+        log_error "請勿再次建立同名 Port Group；請先確認 ${STATE_FILE}。"
+        pause_screen
+        return 1
+    fi
 
     log_ok "Port Group 建立完成：${vnet} / VLAN ${vlan}"
     echo ""
@@ -2510,6 +2542,27 @@ vss_port_group_delete()
             else
                 log_error "VSS Port Group 刪除 Recovery 失敗。"
             fi
+            pause_screen
+            return 1
+        fi
+    done
+
+    for target_name in "${targets[@]}"; do
+        local target_vlan_dev
+        target_vlan_dev="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        if [[ -z "${target_vlan_dev}" ]]; then
+            local target_vlan target_bridge
+            target_vlan="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+            target_bridge="$(awk -F '\t' -v n="${target_name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+            target_vlan_dev="${target_bridge}.${target_vlan}"
+        fi
+        if ip link show "${target_name}" >/dev/null 2>&1; then
+            log_error "VSS Port Group Delete 後 Runtime Bridge 仍存在：${target_name}"
+            pause_screen
+            return 1
+        fi
+        if [[ -n "${target_vlan_dev}" ]] && ip link show "${target_vlan_dev}" >/dev/null 2>&1; then
+            log_error "VSS Port Group Delete 後 VLAN Interface 仍存在：${target_vlan_dev}"
             pause_screen
             return 1
         fi
