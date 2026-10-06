@@ -1953,11 +1953,6 @@ vds_verify_vnet()
         return 1
     fi
 }
-{
-    local vlan="$1"
-    [[ "${vlan}" =~ ^[0-9]+$ ]] && ((vlan >= 1 && vlan <= 4094))
-}
-
 port_group_exists_sdn()
 {
     local vnet="$1"
