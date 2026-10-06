@@ -1063,7 +1063,12 @@ apply_interfaces_file()
     install -m 0644 "${source}" /etc/network/interfaces
     if ! ifreload -a; then
         log_error "套用失敗，開始 Recovery：${change_id}"
-        restore_change_backup "${change_id}" || true
+        if restore_change_backup "${change_id}"; then
+            log_ok "原網路設定 Recovery 完成：${change_id}"
+        else
+            log_error "Recovery 失敗：${change_id}"
+            log_error "目前 /etc/network/interfaces 與 Runtime 網路狀態需要人工確認。"
+        fi
         return 1
     fi
     log_ok "網路設定套用完成：${change_id}"
@@ -1082,11 +1087,37 @@ save_state()
     local type="$1"
     local key="$2"
     local value="$3"
-    ensure_dirs
-    remove_state_entry "${type}" "${key}" 2>/dev/null || true
-    printf '%s\t%s\t%s\n' "${type}" "${key}" "${value}" >> "${STATE_FILE}"
-}
+    local temp
 
+    ensure_dirs
+
+    temp="$(mktemp "${STATE_FILE}.tmp.XXXXXX")" || {
+        log_error "無法建立 State 暫存檔：${STATE_FILE}"
+        return 1
+    }
+
+    if [[ -f "${STATE_FILE}" ]]; then
+        if ! awk -F '\t' -v t="${type}" -v k="${key}" '!(\$1==t && \$2==k)' "${STATE_FILE}" > "${temp}"; then
+            rm -f "${temp}"
+            log_error "無法整理既有 State：${STATE_FILE}"
+            return 1
+        fi
+    fi
+
+    if ! printf '%s\t%s\t%s\n' "${type}" "${key}" "${value}" >> "${temp}"; then
+        rm -f "${temp}"
+        log_error "無法寫入 State：${type} / ${key}"
+        return 1
+    fi
+
+    if ! mv -f "${temp}" "${STATE_FILE}"; then
+        rm -f "${temp}"
+        log_error "無法提交 State：${STATE_FILE}"
+        return 1
+    fi
+
+    return 0
+}
 state_has()
 {
     local type="$1" key="$2"
@@ -1902,7 +1933,6 @@ vds_configure()
     echo ""
 
     cluster_guard || { pause_screen; return 0; }
-
     if ! ensure_network_backup; then return 0; fi
 
     select_sdn_zone || { pause_screen; return 0; }
@@ -1948,15 +1978,13 @@ vds_configure()
         if ! vds_apply; then
             if ((zone_was_created == 1)); then
                 log_step "SDN Apply 失敗，嘗試刪除本次建立的 Zone。"
-                if vds_delete_zone "${SDN_ZONE}"; then
-                    if vds_apply && ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
-                        log_ok "失敗的 SDN Zone 已完成 Recovery。"
-                    else
-                        log_error "SDN Zone Recovery 不完整：實際 Zone / SDN Apply 狀態仍需人工確認：${SDN_ZONE}"
-                    fi
+                if vds_delete_zone "${SDN_ZONE}" && vds_apply && ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
+                    log_ok "失敗的 SDN Zone 已完成 Recovery。"
                 else
-                    log_error "SDN Zone Recovery 失敗：${SDN_ZONE}"
+                    log_error "SDN Zone Recovery 不完整：實際 Zone / SDN Apply 狀態仍需人工確認：${SDN_ZONE}"
                 fi
+            else
+                log_error "現有 SDN Zone Apply 失敗，未修改 State：${SDN_ZONE}"
             fi
             pause_screen
             return 1
@@ -1964,25 +1992,21 @@ vds_configure()
     fi
 
     if ((zone_was_created == 1)); then
+        if ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
+            log_error "SDN Zone Apply 後無法確認實際物件：${SDN_ZONE}"
+            pause_screen
+            return 1
+        fi
+        if ! save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"; then
+            log_error "SDN Zone 已建立，但 State 寫入失敗：${SDN_ZONE}"
+            log_error "請勿再次建立同名 Zone；請先確認 /etc/pve-toolkit/net/state/objects.conf。"
+            pause_screen
+            return 1
+        fi
         log_ok "VDS / SDN Zone 建立完成。"
     fi
     pause_screen
 }
-e_screen
-            return 1
-        fi
-        if ((zone_was_created == 1)); then
-            if ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
-                log_error "SDN Zone Apply 後無法確認實際物件：${SDN_ZONE}"
-                pause_screen
-                return 1
-            fi
-            save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"
-        fi
-    fi
-    pause_screen
-}
-
 vds_setup()
 {
     while true; do
@@ -2459,23 +2483,37 @@ vss_port_group_delete()
     fi
     rm -f "${generated_file}"
 
-    local validation_bridge
-    validation_bridge="$(awk -F "\t" -v n="${targets[0]}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
-    if [[ -z "${validation_bridge}" ]]; then
+    local -a validation_bridges=()
+    local target_name validation_bridge bridge bridge_seen
+    for target_name in "${targets[@]}"; do
+        validation_bridge="$(awk -F "\t" -v n="${target_name}" '\$1=="VSS_PORT_GROUP_BRIDGE" && \$2==n {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        [[ -n "${validation_bridge}" ]] || continue
+
+        bridge_seen=0
+        for bridge in "${validation_bridges[@]}"; do
+            [[ "${bridge}" == "${validation_bridge}" ]] && { bridge_seen=1; break; }
+        done
+        ((bridge_seen == 0)) && validation_bridges+=("${validation_bridge}")
+    done
+
+    if ((${#validation_bridges[@]} == 0)); then
         log_error "無法確認 VSS Port Group Recovery 驗證所需的 Bridge。"
         pause_screen
         return 1
     fi
-    if ! validate_network_after_change "${validation_bridge}"; then
-        log_error "VSS Port Group 刪除後驗證失敗，開始 Recovery。"
-        if restore_change_backup "${change_id}"; then
-            log_ok "VSS Port Group 刪除 Recovery 完成。"
-        else
-            log_error "VSS Port Group 刪除 Recovery 失敗。"
+
+    for validation_bridge in "${validation_bridges[@]}"; do
+        if ! validate_network_after_change "${validation_bridge}"; then
+            log_error "VSS Port Group 刪除後驗證失敗，開始 Recovery：${validation_bridge}"
+            if restore_change_backup "${change_id}"; then
+                log_ok "VSS Port Group 刪除 Recovery 完成。"
+            else
+                log_error "VSS Port Group 刪除 Recovery 失敗。"
+            fi
+            pause_screen
+            return 1
         fi
-        pause_screen
-        return 1
-    fi
+    done
 
     log_ok "VSS Port Group 網路設定已套用，開始同步 State。"
     for target_name in "${targets[@]}"; do
@@ -2724,6 +2762,46 @@ rollback_vds()
 
     if ! vds_apply; then
         log_error "VDS Rollback 後 SDN Apply 失敗：${zone}"
+        log_step "嘗試恢復 Rollback 前的 SDN Zone / VNet。"
+
+        local zone_bridge
+        zone_bridge="$(awk -F '\t' -v z="${zone}" '\$1=="VDS_ZONE" && \$2==z {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        local recovery_ok=1
+
+        if [[ -z "${zone_bridge}" ]]; then
+            log_error "找不到 Zone 原始 Bridge，無法安全完成 VDS Rollback Recovery：${zone}"
+            recovery_ok=0
+        else
+            if ! pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
+                if ! vds_create_zone "${zone}" "${zone_bridge}"; then
+                    log_error "VDS Rollback Recovery 無法重新建立 Zone：${zone}"
+                    recovery_ok=0
+                fi
+            fi
+
+            if ((recovery_ok == 1)); then
+                for vnet in "${vnets[@]}"; do
+                    local recovery_tag
+                    recovery_tag="$(awk -F '\t' -v n="${vnet}" '\$1=="PORT_GROUP" && \$2==n {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+                    if [[ -z "${recovery_tag}" ]] || ! vds_restore_vnet "${zone}" "${vnet}" "${recovery_tag}"; then
+                        recovery_ok=0
+                        log_error "VDS Rollback Recovery 無法恢復 VNet：${vnet}"
+                    fi
+                done
+            fi
+
+            if ((recovery_ok == 1)) && ! vds_apply; then
+                recovery_ok=0
+            fi
+        fi
+
+        if ((recovery_ok == 1)); then
+            log_ok "VDS Rollback Recovery 完成，State 保持不變：${zone}"
+        else
+            log_error "VDS Rollback Recovery 不完整：${zone}"
+            log_error "實際 SDN Zone / VNet / Apply 狀態需要人工確認。"
+        fi
+
         pause_screen
         return 1
     fi
