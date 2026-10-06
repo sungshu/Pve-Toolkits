@@ -1949,9 +1949,11 @@ vds_configure()
             if ((zone_was_created == 1)); then
                 log_step "SDN Apply 失敗，嘗試刪除本次建立的 Zone。"
                 if vds_delete_zone "${SDN_ZONE}"; then
-                    vds_apply || true
-                    remove_state_entry "VDS_ZONE" "${SDN_ZONE}"
-                    log_ok "失敗的 SDN Zone 已完成 Recovery。"
+                    if vds_apply && ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
+                        log_ok "失敗的 SDN Zone 已完成 Recovery。"
+                    else
+                        log_error "SDN Zone Recovery 不完整：實際 Zone / SDN Apply 狀態仍需人工確認：${SDN_ZONE}"
+                    fi
                 else
                     log_error "SDN Zone Recovery 失敗：${SDN_ZONE}"
                 fi
