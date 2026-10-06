@@ -1817,10 +1817,15 @@ vds_delete_vnet()
 {
     local vnet="$1"
     if ! pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+        log_info "SDN VNet 不存在，視為已刪除：${vnet}"
         return 0
     fi
     if ! pvesh delete "/cluster/sdn/vnets/${vnet}"; then
         log_error "SDN VNet 刪除失敗：${vnet}"
+        return 1
+    fi
+    if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+        log_error "SDN VNet 刪除指令回報成功，但實際物件仍存在：${vnet}"
         return 1
     fi
     return 0
@@ -1830,16 +1835,52 @@ vds_delete_zone()
 {
     local zone="$1"
     if ! pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
+        log_info "SDN Zone 不存在，視為已刪除：${zone}"
         return 0
     fi
     if ! pvesh delete "/cluster/sdn/zones/${zone}"; then
         log_error "SDN Zone 刪除失敗：${zone}"
         return 1
     fi
+    if pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
+        log_error "SDN Zone 刪除指令回報成功，但實際物件仍存在：${zone}"
+        return 1
+    fi
     return 0
 }
 
-valid_vlan_id()
+vds_restore_vnet()
+{
+    local zone="$1" vnet="$2" tag="$3"
+    if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then return 0; fi
+    log_step "還原 SDN VNet：${vnet} / Zone ${zone} / VLAN ${tag}"
+    if ! pvesh create /cluster/sdn/vnets --vnet "${vnet}" --zone "${zone}" --tag "${tag}"; then
+        log_error "SDN VNet 還原建立失敗：${vnet}"
+        return 1
+    fi
+    pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1 || {
+        log_error "SDN VNet 還原後無法確認實際物件：${vnet}"
+        return 1
+    }
+}
+
+vds_verify_vnet()
+{
+    local vnet="$1" zone="$2" tag="$3" detail
+    detail="$(pvesh get "/cluster/sdn/vnets/${vnet}" 2>/dev/null || true)"
+    [[ -n "${detail}" ]] || {
+        log_error "找不到 SDN VNet：${vnet}"
+        return 1
+    }
+    if [[ -n "${zone}" ]] && ! grep -qE "(^|[[:space:]])zone[=:][[:space:]]*${zone}([[:space:]]|$)" <<<"${detail}"; then
+        log_error "SDN VNet ${vnet} 的 Zone 與 State 不一致：${zone}"
+        return 1
+    fi
+    if [[ -n "${tag}" ]] && ! grep -qE "(^|[[:space:]])tag[=:][[:space:]]*${tag}([[:space:]]|$)" <<<"${detail}"; then
+        log_error "SDN VNet ${vnet} 的 VLAN Tag 與 State 不一致：${tag}"
+        return 1
+    fi
+}
 {
     local vlan="$1"
     [[ "${vlan}" =~ ^[0-9]+$ ]] && ((vlan >= 1 && vlan <= 4094))
@@ -1896,7 +1937,6 @@ vds_configure()
             return 1
         fi
         zone_was_created=1
-        save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"
     else
         log_info "使用現有 SDN Zone：${SDN_ZONE}"
     fi
@@ -1923,6 +1963,20 @@ vds_configure()
 
     if ((zone_was_created == 1)); then
         log_ok "VDS / SDN Zone 建立完成。"
+    fi
+    pause_screen
+}
+e_screen
+            return 1
+        fi
+        if ((zone_was_created == 1)); then
+            if ! pvesh get "/cluster/sdn/zones/${SDN_ZONE}" >/dev/null 2>&1; then
+                log_error "SDN Zone Apply 後無法確認實際物件：${SDN_ZONE}"
+                pause_screen
+                return 1
+            fi
+            save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"
+        fi
     fi
     pause_screen
 }
@@ -2175,16 +2229,24 @@ vds_port_group_create()
 
     if ! vds_apply; then
         log_error "VDS Port Group 建立後 SDN Apply 失敗，開始 Recovery：${vnet}"
-        if vds_delete_vnet "${vnet}"; then
-            vds_apply || true
+        if vds_delete_vnet "${vnet}" && vds_apply && ! pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
             log_ok "VDS Port Group Recovery 完成：${vnet}"
         else
-            log_error "VDS Port Group Recovery 失敗：${vnet}"
+            log_error "VDS Port Group Recovery 不完整：實際 VNet / SDN Apply 狀態仍需人工確認：${vnet}"
         fi
         pause_screen
         return 1
     fi
-
+    if ! vds_verify_vnet "${vnet}" "${zone}" "${tag}"; then
+        log_error "VDS Port Group 建立後實際物件驗證失敗：${vnet}"
+        if vds_delete_vnet "${vnet}" && vds_apply && ! pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+            log_ok "VDS Port Group 驗證失敗後已完成 Recovery：${vnet}"
+        else
+            log_error "VDS Port Group 驗證失敗後 Recovery 不完整：${vnet}"
+        fi
+        pause_screen
+        return 1
+    fi
     save_state "PORT_GROUP" "${vnet}" "${tag}"
     save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"
     log_ok "VDS Port Group 建立完成：${vnet} / VLAN ${tag}"
@@ -2233,7 +2295,18 @@ vds_port_group_delete()
         return 1
     fi
     if ! vds_apply; then
-        log_error "VDS Port Group 刪除後 SDN Apply 失敗：${vnet}"
+        log_error "VDS Port Group 刪除後 SDN Apply 失敗，開始 Recovery：${vnet}"
+        if vds_restore_vnet "${zone}" "${vnet}" "${tag}" && vds_apply && vds_verify_vnet "${vnet}" "${zone}" "${tag}"; then
+            log_ok "VDS Port Group Delete / Apply Recovery 完成：${vnet}"
+        else
+            log_error "VDS Port Group Delete / Apply Recovery 不完整：${vnet}"
+            log_error "State 保持未刪除；實際 SDN VNet / Apply 狀態需要人工確認。"
+        fi
+        pause_screen
+        return 1
+    fi
+    if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+        log_error "VDS Port Group Delete 後實際 VNet 仍存在，State 不會刪除：${vnet}"
         pause_screen
         return 1
     fi
