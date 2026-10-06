@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # Updated: 2026-10-06
 
 SCRIPT_VERSION="2.0.22"
-UPDATED="2026-10-01"
+UPDATED="2026-10-06"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
@@ -946,6 +946,40 @@ create_change_backup()
     pvecm status > "${target}/cluster-status" 2>&1 || true
 }
 
+validate_recovery_state()
+{
+    local management_dev management_ip gateway
+
+    log_step "驗證 Recovery 後管理網路與 Cluster 狀態"
+    get_management_info
+    management_dev="${DEV_WITH_GW:-}"
+    management_ip="${CURRENT_IP:-}"
+    gateway="${CURRENT_GW:-}"
+
+    if [[ -z "${management_dev}" || -z "${management_ip}" ]]; then
+        log_error "Recovery 後無法確認管理網路介面或 IPv4 位址。"
+        return 1
+    fi
+
+    if [[ -z "${gateway}" ]]; then
+        log_error "Recovery 後無法確認 Default Gateway。"
+        return 1
+    fi
+
+    if ! ip route show default 2>/dev/null | grep -Fq "default via ${gateway} dev ${management_dev}"; then
+        log_error "Recovery 後 Default Route 與管理介面不一致：${management_dev} / ${gateway}"
+        return 1
+    fi
+
+    if ! cluster_quorate; then
+        log_error "Recovery 後 Cluster Quorum 不正常。"
+        return 1
+    fi
+
+    log_ok "Recovery 驗證完成：${management_dev} / ${management_ip} / ${gateway} / Cluster Quorum 正常。"
+    return 0
+}
+
 restore_change_backup()
 {
     local change_id="$1"
@@ -969,8 +1003,12 @@ restore_change_backup()
         cp -a "${BACKUP_DIR}/${change_id}/state" "${STATE_FILE}"
         cp -a "${BACKUP_DIR}/${change_id}/state" "${RECOVERY_DIR}/${change_id}/state.restored"
     fi
-}
 
+    if ! validate_recovery_state; then
+        log_error "Recovery Apply 已完成，但 Recovery 狀態驗證失敗。"
+        return 1
+    fi
+}
 network_pending_configuration_exists()
 {
     [[ -f /etc/network/interfaces.new && -s /etc/network/interfaces.new ]]
@@ -1764,6 +1802,43 @@ vds_create_vnet()
     pvesh create /cluster/sdn/vnets --vnet "${vnet}" --zone "${zone}" --tag "${tag}"
 }
 
+vds_apply()
+{
+    log_step "套用 SDN 設定"
+    if ! pvesh set /cluster/sdn; then
+        log_error "SDN Apply 失敗。"
+        return 1
+    fi
+    log_ok "SDN Apply 完成。"
+    return 0
+}
+
+vds_delete_vnet()
+{
+    local vnet="$1"
+    if ! pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! pvesh delete "/cluster/sdn/vnets/${vnet}"; then
+        log_error "SDN VNet 刪除失敗：${vnet}"
+        return 1
+    fi
+    return 0
+}
+
+vds_delete_zone()
+{
+    local zone="$1"
+    if ! pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! pvesh delete "/cluster/sdn/zones/${zone}"; then
+        log_error "SDN Zone 刪除失敗：${zone}"
+        return 1
+    fi
+    return 0
+}
+
 valid_vlan_id()
 {
     local vlan="$1"
@@ -1815,7 +1890,11 @@ vds_configure()
             pause_screen
             return 0
         fi
-        vds_create_zone "${SDN_ZONE}" "${SDN_BRIDGE}"
+        if ! vds_create_zone "${SDN_ZONE}" "${SDN_BRIDGE}"; then
+            log_error "SDN Zone 建立失敗：${SDN_ZONE}"
+            pause_screen
+            return 1
+        fi
         zone_was_created=1
         save_state "VDS_ZONE" "${SDN_ZONE}" "${SDN_BRIDGE}"
     else
@@ -1826,8 +1905,20 @@ vds_configure()
     echo "Port Group / VNet 可以稍後由選單建立。"
     echo ""
     if confirm "現在立即 Apply SDN？"; then
-        pvesh set /cluster/sdn
-        log_ok "SDN Apply 完成。"
+        if ! vds_apply; then
+            if ((zone_was_created == 1)); then
+                log_step "SDN Apply 失敗，嘗試刪除本次建立的 Zone。"
+                if vds_delete_zone "${SDN_ZONE}"; then
+                    vds_apply || true
+                    remove_state_entry "VDS_ZONE" "${SDN_ZONE}"
+                    log_ok "失敗的 SDN Zone 已完成 Recovery。"
+                else
+                    log_error "SDN Zone Recovery 失敗：${SDN_ZONE}"
+                fi
+            fi
+            pause_screen
+            return 1
+        fi
     fi
 
     if ((zone_was_created == 1)); then
@@ -2025,6 +2116,17 @@ EOF
     fi
     rm -f "${generated_file}"
 
+    if ! validate_network_after_change "${bridge}"; then
+        log_error "VSS Port Group ${vnet} 建立後驗證失敗，開始 Recovery。"
+        if restore_change_backup "${change_id}"; then
+            log_ok "VSS Port Group ${vnet} 已完成 Recovery。"
+        else
+            log_error "VSS Port Group ${vnet} Recovery 失敗。"
+        fi
+        pause_screen
+        return 1
+    fi
+
     save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}"
     save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}"
     save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"
@@ -2070,9 +2172,21 @@ vds_port_group_create()
         pause_screen
         return 1
     fi
+
+    if ! vds_apply; then
+        log_error "VDS Port Group 建立後 SDN Apply 失敗，開始 Recovery：${vnet}"
+        if vds_delete_vnet "${vnet}"; then
+            vds_apply || true
+            log_ok "VDS Port Group Recovery 完成：${vnet}"
+        else
+            log_error "VDS Port Group Recovery 失敗：${vnet}"
+        fi
+        pause_screen
+        return 1
+    fi
+
     save_state "PORT_GROUP" "${vnet}" "${tag}"
     save_state "PORT_GROUP_ZONE" "${vnet}" "${zone}"
-    pvesh set /cluster/sdn
     log_ok "VDS Port Group 建立完成：${vnet} / VLAN ${tag}"
     pause_screen
 }
@@ -2113,16 +2227,18 @@ vds_port_group_delete()
         log_error "選擇無效。"
     done
     if ! confirm "確認刪除 VDS Port Group ${vnet}？"; then pause_screen; return 0; fi
-    if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
-        if ! pvesh delete "/cluster/sdn/vnets/${vnet}"; then
-            log_error "VDS Port Group 刪除失敗：${vnet}"
-            pause_screen
-            return 1
-        fi
+    if ! vds_delete_vnet "${vnet}"; then
+        log_error "VDS Port Group 刪除失敗：${vnet}"
+        pause_screen
+        return 1
+    fi
+    if ! vds_apply; then
+        log_error "VDS Port Group 刪除後 SDN Apply 失敗：${vnet}"
+        pause_screen
+        return 1
     fi
     remove_state_entry "PORT_GROUP" "${vnet}"
     remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
-    pvesh set /cluster/sdn
     log_ok "VDS Port Group 已刪除：${vnet}"
     pause_screen
 }
@@ -2267,6 +2383,24 @@ vss_port_group_delete()
         return 1
     fi
     rm -f "${generated_file}"
+
+    local validation_bridge
+    validation_bridge="$(awk -F "\t" -v n="${targets[0]}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+    if [[ -z "${validation_bridge}" ]]; then
+        log_error "無法確認 VSS Port Group Recovery 驗證所需的 Bridge。"
+        pause_screen
+        return 1
+    fi
+    if ! validate_network_after_change "${validation_bridge}"; then
+        log_error "VSS Port Group 刪除後驗證失敗，開始 Recovery。"
+        if restore_change_backup "${change_id}"; then
+            log_ok "VSS Port Group 刪除 Recovery 完成。"
+        else
+            log_error "VSS Port Group 刪除 Recovery 失敗。"
+        fi
+        pause_screen
+        return 1
+    fi
 
     log_ok "VSS Port Group 網路設定已套用，開始同步 State。"
     for target_name in "${targets[@]}"; do
@@ -2500,18 +2634,30 @@ rollback_vds()
     done < <(awk -F '\t' -v z="${zone}" '$1=="PORT_GROUP_ZONE" && $3==z {print $2}' "${STATE_FILE}" 2>/dev/null || true)
 
     for vnet in "${vnets[@]}"; do
-        if pvesh get "/cluster/sdn/vnets/${vnet}" >/dev/null 2>&1; then
-            pvesh delete "/cluster/sdn/vnets/${vnet}"
+        if ! vds_delete_vnet "${vnet}"; then
+            log_error "VDS Rollback 中止：無法刪除 VNet ${vnet}"
+            pause_screen
+            return 1
         fi
+    done
+
+    if ! vds_delete_zone "${zone}"; then
+        log_error "VDS Rollback 中止：無法刪除 Zone ${zone}"
+        pause_screen
+        return 1
+    fi
+
+    if ! vds_apply; then
+        log_error "VDS Rollback 後 SDN Apply 失敗：${zone}"
+        pause_screen
+        return 1
+    fi
+
+    for vnet in "${vnets[@]}"; do
         remove_state_entry "PORT_GROUP" "${vnet}"
         remove_state_entry "PORT_GROUP_ZONE" "${vnet}"
     done
-
-    if pvesh get "/cluster/sdn/zones/${zone}" >/dev/null 2>&1; then
-        pvesh delete "/cluster/sdn/zones/${zone}"
-    fi
     remove_state_entry "VDS_ZONE" "${zone}"
-    pvesh set /cluster/sdn
 
     log_ok "VDS Rollback 完成：${zone}"
     pause_screen
