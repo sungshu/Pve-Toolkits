@@ -1584,15 +1584,24 @@ vss_uplink_add()
         return 1
     fi
 
-    save_state "VSS" "bridge" "${bridge}"
-    save_state "VSS" "nic1" "${first_nic}"
-    remove_state_entry "VSS" "nic2"
-    if [[ -n "${second_nic}" ]]; then
-        save_state "VSS" "nic2" "${second_nic}"
+    if ! save_state "VSS" "bridge" "${bridge}" ||
+         ! save_state "VSS" "nic1" "${first_nic}" ||
+         ! remove_state_entry "VSS" "nic2" ||
+         { [[ -n "${second_nic}" ]] && ! save_state "VSS" "nic2" "${second_nic}"; } ||
+         ! save_state "VSS" "bond_mode" "${BOND_MODE:-none}" ||
+         ! save_state "VSS" "bond_hash" "${BOND_XMIT_HASH_POLICY:-none}" ||
+         ! save_state "VSS" "bond_lacp_rate" "${BOND_LACP_RATE:-none}"; then
+        log_error "VSS Uplink 已套用，但 State 寫入失敗。"
+        local state_recovery_id
+        state_recovery_id="$(create_change_id)"
+        if apply_interfaces_file "${state_recovery_id}" "${VSS_DIR}/interfaces.before-uplink"; then
+            log_ok "VSS Uplink State 失敗後已完成 Runtime Recovery。"
+        else
+            log_error "VSS Uplink State 失敗後 Recovery 不完整。"
+        fi
+        pause_screen
+        return 1
     fi
-    save_state "VSS" "bond_mode" "${BOND_MODE:-none}"
-    save_state "VSS" "bond_hash" "${BOND_XMIT_HASH_POLICY:-none}"
-    save_state "VSS" "bond_lacp_rate" "${BOND_LACP_RATE:-none}"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.vss"
 
     log_ok "Physical Uplink 設定生效完成。"
