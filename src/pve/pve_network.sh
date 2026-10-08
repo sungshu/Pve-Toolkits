@@ -1463,13 +1463,7 @@ vss_uplink_add()
     local -a bridges=()
     local bridge choice
     while read -r bridge; do
-        [[ -n "${bridge}" ]] || continue
-        # Port Group 本身也是 Linux Bridge，但它不是可供建立下一個 Port Group 的 Virtual Switch。
-        # 只排除本工具 State 明確記錄為 VSS_PORT_GROUP 的 Bridge，避免把一般/外部 Linux Bridge 誤判成 Port Group.
-        if state_has "VSS_PORT_GROUP" "${bridge}"; then
-            continue
-        fi
-        bridges+=("${bridge}")
+        [[ -n "${bridge}" ]] && bridges+=("${bridge}")
     done < <(get_linux_bridges)
 
     if (("${#bridges[@]}" == 0)); then
@@ -2157,7 +2151,13 @@ vss_port_group_create()
     local -a bridges=()
     local bridge choice
     while read -r bridge; do
-        [[ -n "${bridge}" ]] && bridges+=("${bridge}")
+        [[ -n "${bridge}" ]] || continue
+        # Port Group 本身也是 Linux Bridge，但它不是可供建立下一個 Port Group 的 Virtual Switch。
+        # 只排除本工具 State 明確記錄為 VSS_PORT_GROUP 的 Bridge，避免把一般/外部 Linux Bridge 誤判成 Port Group.
+        if state_has "VSS_PORT_GROUP" "${bridge}"; then
+            continue
+        fi
+        bridges+=("${bridge}")
     done < <(get_linux_bridges)
 
     if (("${#bridges[@]}" == 0)); then
