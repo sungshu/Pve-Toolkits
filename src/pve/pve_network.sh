@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.26
+# Version: 2.0.27
 # Updated: 2026-10-08
 
-SCRIPT_VERSION="2.0.26"
+SCRIPT_VERSION="2.0.27"
 UPDATED="2026-10-08"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2188,9 +2188,40 @@ vss_port_group_create()
     while true; do
         read -r -p "Port Group 名稱：" vnet
         [[ "${vnet}" =~ ^[A-Za-z0-9_-]+$ ]] || { log_error "名稱只能使用英數、底線、連字號。"; continue; }
-        if state_has "VSS_PORT_GROUP" "${vnet}" || [[ -e "/sys/class/net/${vnet}" ]]; then
+        local state_exists=0
+        local runtime_exists=0
+        local config_exists=0
+
+        if state_has "VSS_PORT_GROUP" "${vnet}"; then
+            state_exists=1
+        fi
+        if [[ -e "/sys/class/net/${vnet}" ]]; then
+            runtime_exists=1
+        fi
+        if grep -qE "^(auto|allow-[^[:space:]]+)[[:space:]]+${vnet}([[:space:]]|$)|^iface[[:space:]]+${vnet}([[:space:]]|$)" /etc/network/interfaces /etc/network/interfaces.new 2>/dev/null; then
+            config_exists=1
+        fi
+
+        if (( runtime_exists == 1 || config_exists == 1 )); then
             log_error "VSS Port Group / PVE Bridge ${vnet} 已存在。"
             continue
+        fi
+
+        if (( state_exists == 1 )); then
+            log_info "偵測到 VSS Port Group State 殘留，但 Runtime / 設定檔均不存在：${vnet}"
+            log_info "清除該 Port Group 的過期 State 後重新建立。"
+            remove_state_entry "VSS_PORT_GROUP" "${vnet}" || {
+                log_error "無法清除過期 State：VSS_PORT_GROUP / ${vnet}"
+                continue
+            }
+            remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${vnet}" || {
+                log_error "無法清除過期 State：VSS_PORT_GROUP_BRIDGE / ${vnet}"
+                continue
+            }
+            remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" || {
+                log_error "無法清除過期 State：VSS_PORT_GROUP_VLAN_DEV / ${vnet}"
+                continue
+            }
         fi
         break
     done
