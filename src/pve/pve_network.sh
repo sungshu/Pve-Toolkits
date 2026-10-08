@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.24
-# Updated: 2026-10-06
+# Version: 2.0.26
+# Updated: 2026-10-08
 
-SCRIPT_VERSION="2.0.25"
+SCRIPT_VERSION="2.0.26"
 UPDATED="2026-10-08"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2139,6 +2139,13 @@ vss_port_group_create()
 
     cluster_guard || { pause_screen; return 0; }
 
+    # GUI Pending Configuration 必須在進入 Port Group 建立流程前攔截，避免使用者完成輸入後才被阻擋。
+    # apply_interfaces_file() 仍保留第二道 Guard，防止檢查後才出現 Pending。
+    if ! network_pending_guard; then
+        pause_screen
+        return 0
+    fi
+
     if ! ensure_network_backup; then return 0; fi
 
     local -a bridges=()
@@ -2234,7 +2241,11 @@ EOF
     log_step "已完成設定整理，準備 Backup 並套用網路設定。"
     if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
         rm -f "${generated_file}"
-        log_error "VSS Port Group ${vnet} 建立失敗，已嘗試 Recovery。"
+        if network_pending_configuration_exists; then
+            log_error "VSS Port Group ${vnet} 未建立：GUI Pending Configuration 阻擋了變更；本次未修改 /etc/network/interfaces，未執行 Recovery。"
+        else
+            log_error "VSS Port Group ${vnet} 建立失敗；套用流程已處理 Recovery，請檢查上方錯誤。"
+        fi
         pause_screen
         return 1
     fi
@@ -2645,7 +2656,7 @@ vss_port_group_menu()
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_port_group_create ;;
+            1) vss_port_group_create || true ;;
             2) vss_port_group_delete ;;
             3) port_group_list_vss; pause_screen ;;
             0) return 0 ;;
