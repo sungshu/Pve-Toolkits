@@ -1463,22 +1463,28 @@ vss_uplink_add()
     local -a bridges=()
     local bridge choice
 
-    # Physical Uplink 只能選真正的 VSS Virtual Switch。
-    # VSS Port Group 也是 Linux Bridge，但不是 Virtual Switch，
-    # 因此不能直接使用 get_linux_bridges() 全部列出。
-    # 只列出 PVE NETWORK PRO State 明確註冊為 VSS 的 Bridge。
-    while IFS=$'\t' read -r state_type state_key state_value; do
-        [[ "${state_type}" == "VSS" ]] || continue
-        [[ "${state_key}" == "bridge" ]] || continue
-        [[ -n "${state_value}" ]] || continue
-        [[ -d "/sys/class/net/${state_value}/bridge" ]] || continue
-        if ! state_has "VSS_PORT_GROUP" "${state_value}"; then
-            bridges+=( "${state_value}" )
-        fi
-    done < "${STATE_FILE}"
+    # Physical Uplink 只允許已註冊的 VSS Virtual Switch。
+    # Port Group 也是 Linux Bridge，但其 State 類型為 VSS_PORT_GROUP，
+    # 絕對不能透過 get_linux_bridges() 判定為 Virtual Switch。
+    if [[ -f "${STATE_FILE}" ]]; then
+        while IFS=$'\t' read -r state_type state_key state_value; do
+            [[ "${state_type}" == "VSS" ]] || continue
+            [[ "${state_key}" == "bridge" ]] || continue
+            [[ -n "${state_value}" ]] || continue
+            [[ -d "/sys/class/net/${state_value}/bridge" ]] || continue
 
-    # 舊版 State 若沒有 VSS bridge 記錄，不自行把所有 Linux Bridge 當成 Virtual Switch。
-    # Physical Uplink 必須以 VSS 物件為準，避免 Port Group 混入清單。
+            # 再次確認這個 Bridge 不是任何已登錄的 VSS Port Group。
+            if awk -F '\\t' -v bridge="${state_value}" '
+                $1=="VSS_PORT_GROUP_BRIDGE" && $3==bridge { found=1 }
+                END { exit(found ? 0 : 1) }
+            ' "${STATE_FILE}"; then
+                continue
+            fi
+
+            bridges+=( "${state_value}" )
+        done < "${STATE_FILE}"
+    fi
+
     echo "選擇 Virtual Switch："
     echo "（VMware 名稱為主，PVE Bridge 為註解）"
     local i=1
