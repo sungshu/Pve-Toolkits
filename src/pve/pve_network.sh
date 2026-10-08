@@ -5,8 +5,8 @@ set -Eeuo pipefail
 # Version: 2.0.24
 # Updated: 2026-10-06
 
-SCRIPT_VERSION="2.0.24"
-UPDATED="2026-10-06"
+SCRIPT_VERSION="2.0.25"
+UPDATED="2026-10-08"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
@@ -1113,6 +1113,13 @@ save_state()
 
     return 0
 }
+valid_vlan_id()
+{
+    local vlan_id="${1:-}"
+    [[ "${vlan_id}" =~ ^[0-9]+$ ]] || return 1
+    (( 10#${vlan_id} >= 1 && 10#${vlan_id} <= 4094 ))
+}
+
 state_has()
 {
     local type="$1" key="$2"
@@ -2174,7 +2181,7 @@ vss_port_group_create()
     while true; do
         read -r -p "Port Group 名稱：" vnet
         [[ "${vnet}" =~ ^[A-Za-z0-9_-]+$ ]] || { log_error "名稱只能使用英數、底線、連字號。"; continue; }
-        if state_has "VSS_PORT_GROUP" "${vnet}" || ip link show "${vnet}" >/dev/null 2>&1; then
+        if state_has "VSS_PORT_GROUP" "${vnet}" || [[ -e "/sys/class/net/${vnet}" ]]; then
             log_error "VSS Port Group / PVE Bridge ${vnet} 已存在。"
             continue
         fi
