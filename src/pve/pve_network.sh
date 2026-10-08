@@ -1549,7 +1549,7 @@ vss_uplink_add()
     echo " Physical NIC 1：${first_nic}"
     echo " Physical NIC 2：${second_nic:-未使用}"
     echo " NIC Teaming    ：${BOND_MODE:-不使用 Bond}"
-    echo " VMkernel IP   ：${CURRENT_IP:-未偵測}"
+    echo " Management IP ：${CURRENT_IP:-未偵測}"
     echo " Gateway       ：${CURRENT_GW:-未偵測}"
     echo "------------------------------------------------------------"
     echo ""
@@ -1672,7 +1672,7 @@ vss_show()
     echo "Port Group："
     port_group_list_vss
     echo ""
-    echo "VMkernel / Management："
+    echo "Management / Host Network："
     get_management_info
     echo "  Device ：${DEV_WITH_GW:-未偵測}"
     echo "  IP     ：${CURRENT_IP:-未偵測}"
@@ -1685,10 +1685,10 @@ vss_vmkernel_menu()
 {
     show_header
     echo "============================================================"
-    echo " VMkernel Adapter / Management"
+    echo " Management / Host Network"
     echo "============================================================"
     echo ""
-    echo "目前僅提供管理介面資訊檢視。"
+    echo "目前僅提供 PVE 主機管理網路資訊檢視。"
     echo "Management IP、Gateway 與 Cluster Network 不在此處直接修改。"
     echo ""
 
@@ -1701,41 +1701,69 @@ vss_vmkernel_menu()
     pause_screen
 }
 
+vss_add_network_menu()
+{
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " 新增網路"
+        echo "============================================================"
+        echo ""
+        echo "VMware 操作方式：先選擇「連線類型」，再進入該類型的設定流程。"
+        echo "PVE 底層的 Bridge、VLAN Interface、Bond 等由程式自動處理。"
+        echo ""
+        echo " 選取連線類型："
+        echo ""
+        echo "  1) 標準交換器的虛擬機器連接埠群組"
+        echo "     Port Group — 建立名稱與 VLAN ID，供虛擬機器使用"
+        echo ""
+        echo "  2) 實體網路介面卡"
+        echo "     Physical Uplink — 將實體 NIC / NIC Teaming 連接到 Virtual Switch"
+        echo ""
+        echo "  0) 返回"
+        echo ""
+        local choice
+        read -r -p "請選擇連線類型：" choice
+        case "${choice}" in
+            1) vss_port_group_create || true ;;
+            2) vss_uplink_add wizard ;;
+            0) return 0 ;;
+            *) log_error "選擇無效，請輸入上方數字。"; sleep 1 ;;
+        esac
+    done
+}
+
 vss_physical_uplink_menu()
 {
     while true; do
         show_header
         echo "============================================================"
-        echo " Physical Uplink"
+        echo " Physical Uplink 管理"
         echo "============================================================"
         echo ""
-        echo "VMware 模型：VSS → Physical Uplink → NIC / NIC Teaming."
-        echo "PVE 實作：NIC / Bond → Linux Bridge。"
+        echo "VMware：Virtual Switch → Physical Uplink。"
+        echo "PVE：由程式自動處理 Physical NIC 與 Linux Bond。"
         echo ""
-        echo "  1) Single NIC"
+        echo "  1) 單一實體網路介面卡"
+        echo "     不建立 NIC Teaming，直接使用一張 NIC"
+        echo ""
         echo "  2) NIC Teaming / Linux Bond"
-        echo "  3) 查看 Uplink"
+        echo "     使用兩張以上實體 NIC 進行主備或聚合"
+        echo ""
+        echo "  3) 查看目前 Uplink"
         echo "  0) 返回"
         echo ""
-
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1)
-                vss_uplink_add single
-                ;;
-            2)
-                vss_uplink_add bond
-                ;;
-            3)
-                vss_show
-                ;;
+            1) vss_uplink_add single ;;
+            2) vss_uplink_add bond ;;
+            3) vss_show ;;
             0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入上方數字。"; sleep 1 ;;
         esac
     done
 }
-
 vss_setup()
 {
     while true; do
@@ -1744,26 +1772,36 @@ vss_setup()
         echo " Virtual Switch / VSS"
         echo "============================================================"
         echo ""
-        echo "  1) Virtual Switch"
-        echo "  2) Physical Uplink"
-        echo "  3) Port Group"
-        echo "  4) VMkernel Adapter / Management"
-        echo "  5) 查看"
+        echo "VMware 操作模型：Virtual Switch → Port Group / Physical Uplink。"
+        echo "PVE 實作細節由 Backend 自動處理；使用者不需要操作 vmbr0、VLAN"
+        echo "Sub-interface、Bridge Port 或 Linux Bond 的底層設定。"
+        echo ""
+        echo "============================================================"
+        echo " 操作"
+        echo "============================================================"
+        echo "  1) 新增網路..."
+        echo "     VMware：新增網路 → 選取連線類型"
+        echo "     （Port Group / Physical Uplink）"
+        echo ""
+        echo "  2) 查看目前設定"
+        echo "     顯示 Virtual Switch、Port Group、VLAN ID 與 Physical Uplink"
+        echo ""
+        echo "  3) 重新整理"
         echo "  0) 返回"
         echo ""
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) vss_create ;;
-            2) vss_physical_uplink_menu ;;
-            3) vss_port_group_menu ;;
-            4) vss_vmkernel_menu ;;
-            5) vss_show ;;
+            1) vss_add_network_menu ;;
+            2) vss_show ;;
+            3) continue ;;
             0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
+            *) log_error "選擇無效，請輸入上方數字。"; sleep 1 ;;
         esac
     done
 }
+
+
 
 
 show_vds_config()
@@ -3155,7 +3193,7 @@ main_menu()
         echo "     ├─ Virtual Switch / VSS"
         echo "     │  ├─ Physical Uplink"
         echo "     │  ├─ Port Group"
-        echo "     │  └─ VMkernel Adapter / Management"
+        echo "     │  └─ Management / Host Network"
         echo "     └─ Distributed Virtual Switch / VDS"
         echo "        └─ Port Group"
         echo "  2) Backup / Recovery"
