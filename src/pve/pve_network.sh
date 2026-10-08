@@ -1474,7 +1474,7 @@ vss_uplink_add()
             [[ -d "/sys/class/net/${state_value}/bridge" ]] || continue
 
             # 再次確認這個 Bridge 不是任何已登錄的 VSS Port Group。
-            if awk -F '\\t' -v bridge="${state_value}" '
+            if awk -F '\t' -v bridge="${state_value}" '
                 $1=="VSS_PORT_GROUP_BRIDGE" && $3==bridge { found=1 }
                 END { exit(found ? 0 : 1) }
             ' "${STATE_FILE}"; then
