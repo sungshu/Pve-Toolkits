@@ -2141,7 +2141,10 @@ port_group_list_vss()
             found=1
             local bridge
             bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
-            printf "  - %-20s VLAN ID=%-5s Bridge=%s\n" "${name}" "${value}" "${bridge:-未知}"
+            echo "  - ${name}"
+            echo "      VLAN ID : ${value}"
+            echo "      Virtual Switch：$(get_vswitch_name "${bridge}")"
+            echo "      PVE Bridge     ：${bridge:-未知}"
         done < "${STATE_FILE}"
     fi
 
