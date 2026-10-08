@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.28
+# Version: 2.0.29
 # Updated: 2026-10-08
 
-SCRIPT_VERSION="2.0.28"
+SCRIPT_VERSION="2.0.29"
 UPDATED="2026-10-08"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -270,6 +270,11 @@ get_linux_bridges()
         bridge="${path%/bridge}"
         bridge="${bridge##*/}"
         [[ -n "${bridge}" && "${bridge}" != "lo" ]] || continue
+        # PVE VM Firewall / Runtime Bridge 不是使用者可管理的 Virtual Switch。
+        # 例如 fwbr100200i0、fwpr100200p0、fwln100200i0 皆屬 VM Runtime 網路物件。
+        [[ "${bridge}" =~ ^fwbr[0-9]+i[0-9]+$ ]] && continue
+        [[ "${bridge}" =~ ^fwpr[0-9]+p[0-9]+$ ]] && continue
+        [[ "${bridge}" =~ ^fwln[0-9]+i[0-9]+$ ]] && continue
         echo "${bridge}"
     done | sort -V
 }
@@ -689,6 +694,14 @@ save_interfaces_copy()
 {
     local target="$1"
     cp -a /etc/network/interfaces "${target}"
+}
+
+prepare_vss_recovery()
+{
+    ensure_dirs
+    cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.before"
+    cp -a "${STATE_FILE}" "${VSS_DIR}/objects.before"
+    network_snapshot "${VSS_DIR}/network.before"
 }
 
 write_vss_interfaces()
@@ -1377,6 +1390,7 @@ vss_create()
     fi
 
     ensure_dirs
+    prepare_vss_recovery
 
     if [[ -e "/sys/class/net/${bridge}" ]]; then
         if ! ensure_bridge_vlan_aware "${bridge}"; then
@@ -1563,6 +1577,7 @@ vss_uplink_add()
     fi
 
     ensure_dirs
+    prepare_vss_recovery
     save_interfaces_copy "${VSS_DIR}/interfaces.before-uplink"
     network_snapshot "${VSS_DIR}/network.before-uplink"
 
@@ -2235,6 +2250,8 @@ vss_port_group_create()
         log_error "選擇無效，請輸入上方數字。"
     done
 
+    prepare_vss_recovery
+
     if ! ensure_bridge_vlan_aware "${bridge}"; then
         pause_screen
         return 1
@@ -2860,11 +2877,13 @@ rollback_vss()
 
     if [[ ! -f "${VSS_DIR}/interfaces.before" ]]; then
         log_error "找不到 VSS 變更前設定：${VSS_DIR}/interfaces.before"
+        log_error "目前沒有可用的 VSS Recovery 基準。"
         pause_screen
         return 0
     fi
 
     echo "將還原：${VSS_DIR}/interfaces.before"
+    [[ -f "${VSS_DIR}/objects.before" ]] && echo "State：${VSS_DIR}/objects.before"
     echo ""
     if ! confirm "確認還原 VSS？"; then
         pause_screen
@@ -2883,7 +2902,13 @@ rollback_vss()
         return 1
     fi
 
+    # 先依 Recovery 前的 State 清理本次 VSS 變更產生、而在還原檔中不存在的 Runtime Object。
     vss_reconcile_state_after_recovery "${VSS_DIR}/interfaces.before"
+
+    if [[ -f "${VSS_DIR}/objects.before" ]]; then
+        cp -a "${VSS_DIR}/objects.before" "${STATE_FILE}"
+        log_ok "VSS State 已同步還原。"
+    fi
 
     if cluster_quorate; then
         log_ok "VSS Recovery 完成，設定檔、Runtime Object 與 State 已同步。"
@@ -3089,17 +3114,81 @@ rollback_baseline()
 
 backup_history()
 {
-    show_header
-    echo "============================================================"
-    echo " Backup History"
-    echo "============================================================"
-    echo ""
-    if [[ ! -d "${BACKUP_DIR}" ]]; then
-        echo "目前沒有 Backup。"
-    else
-        find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '  %h\n' 2>/dev/null | sort -u
-    fi
-    pause_screen
+    while true; do
+        show_header
+        echo "============================================================"
+        echo " Backup History"
+        echo "============================================================"
+        echo ""
+
+        local -a backups=()
+        local backup choice i
+        if [[ -d "${BACKUP_DIR}" ]]; then
+            while read -r backup; do
+                [[ -n "${backup}" ]] || continue
+                backups+=( "${backup}" )
+            done < <(find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '%h\n' 2>/dev/null | sort -u)
+        fi
+
+        if ((${#backups[@]} == 0)); then
+            echo "目前沒有 Backup。"
+            pause_screen
+            return 0
+        fi
+
+        i=1
+        for backup in "${backups[@]}"; do
+            printf "  %2d) %s\n" "${i}" "${backup}"
+            i=$((i + 1))
+        done
+        echo "   0) 返回"
+        echo ""
+        echo "選擇 Backup 後可直接執行 Recovery。"
+
+        read -r -p "請選擇：" choice
+        if [[ "${choice}" == "0" ]]; then
+            return 0
+        fi
+        if ! [[ "${choice}" =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#backups[@]})); then
+            log_error "選擇無效。"
+            sleep 1
+            continue
+        fi
+
+        backup="${backups[$((choice - 1))]}"
+        local change_id="${backup##*/}"
+
+        echo ""
+        echo "------------------------------------------------------------"
+        echo " Backup Recovery 確認"
+        echo "------------------------------------------------------------"
+        echo " Change ID：${change_id}"
+        echo " Source   ：${backup}/interfaces"
+        echo " State    ：${backup}/state"
+        echo "------------------------------------------------------------"
+        echo ""
+        echo "這是高風險操作，會覆蓋目前 /etc/network/interfaces。"
+        if ! confirm "確認使用此 Backup 還原？"; then
+            continue
+        fi
+
+        local current_backup
+        current_backup="$(create_change_id)"
+        if ! create_change_backup "${current_backup}"; then
+            log_error "無法保存目前網路設定，停止 Backup Recovery。"
+            pause_screen
+            return 1
+        fi
+        log_info "目前設定已先保存：${BACKUP_DIR}/${current_backup}"
+
+        if restore_change_backup "${change_id}"; then
+            log_ok "Backup Recovery 完成：${change_id}"
+        else
+            log_error "Backup Recovery 失敗：${change_id}"
+        fi
+        pause_screen
+        return 0
+    done
 }
 
 rollback_menu()
