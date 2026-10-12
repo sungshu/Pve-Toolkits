@@ -1185,10 +1185,19 @@ restore_change_backup()
 
     if [[ -n "${state_source}" ]]; then
         if ! cp -a "${state_source}" "${STATE_FILE}"; then
-            log_error "Recovery State 還原失敗，嘗試回復 Recovery 前設定。"
-            cp -a "${rollback_path}" /etc/network/interfaces
-            if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
-            ifreload -a || log_error "Recovery 前 Runtime 回復失敗，需人工檢查。"
+            local failure_stamp
+            failure_stamp="$(date '+%Y%m%d-%H%M%S-%N')"
+            log_error "Recovery State 還原失敗；保存診斷快照並停止自動重試 ifreload。"
+            cp -a /etc/network/interfaces "${recovery_path}/interfaces.failed-state-restore.${failure_stamp}" || log_error "無法保存 State 還原失敗時的 interfaces。"
+            cp -a "${rollback_path}" "${recovery_path}/interfaces.before-recovery.${failure_stamp}" || log_error "無法保存 Recovery 前 interfaces 快照。"
+            if ((had_state)); then
+                cp -a "${rollback_state}" "${recovery_path}/state.before-recovery.${failure_stamp}" || log_error "無法保存 Recovery 前 State 快照。"
+                cp -a "${rollback_state}" "${STATE_FILE}" || log_error "Recovery 前 State 寫回失敗；快照仍保留於 ${rollback_state}"
+            else
+                rm -f -- "${STATE_FILE}" || log_error "無法移除 Recovery 期間產生的 State。"
+            fi
+            cp -a "${rollback_path}" /etc/network/interfaces || log_error "Recovery 前 interfaces 寫回失敗；快照仍保留於 ${rollback_path}"
+            log_error "Recovery 未成功；Runtime 未重新套用或驗證，診斷檔案位於：${recovery_path}"
             rm -f -- "${rollback_path}" "${rollback_state:-}"
             return 1
         fi
@@ -1196,10 +1205,19 @@ restore_change_backup()
     fi
 
     if ! validate_recovery_state; then
-        log_error "Recovery 驗證失敗，嘗試回復 Recovery 前設定與 State。"
-        cp -a "${rollback_path}" /etc/network/interfaces
-        if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
-        if ifreload -a; then log_info "已重新套用 Recovery 前設定；仍請確認管理網路與 Cluster。"; else log_error "Recovery 前設定已寫回，但 Runtime 回復失敗，需人工救援。"; fi
+        local failure_stamp
+        failure_stamp="$(date '+%Y%m%d-%H%M%S-%N')"
+        log_error "Recovery 驗證失敗；保存前後快照並停止自動重試 ifreload。"
+        cp -a /etc/network/interfaces "${recovery_path}/interfaces.validation-failed.${failure_stamp}" || log_error "無法保存驗證失敗時的 interfaces。"
+        cp -a "${rollback_path}" "${recovery_path}/interfaces.before-recovery.${failure_stamp}" || log_error "無法保存 Recovery 前 interfaces 快照。"
+        if ((had_state)); then
+            cp -a "${rollback_state}" "${recovery_path}/state.before-recovery.${failure_stamp}" || log_error "無法保存 Recovery 前 State 快照。"
+            cp -a "${rollback_state}" "${STATE_FILE}" || log_error "Recovery 前 State 寫回失敗；快照仍保留於 ${rollback_state}"
+        else
+            rm -f -- "${STATE_FILE}" || log_error "無法移除 Recovery 期間產生的 State。"
+        fi
+        cp -a "${rollback_path}" /etc/network/interfaces || log_error "Recovery 前 interfaces 寫回失敗；快照仍保留於 ${rollback_path}"
+        log_error "Recovery 未成功；Runtime 未重新套用或驗證，診斷檔案位於：${recovery_path}"
         rm -f -- "${rollback_path}" "${rollback_state:-}"
         return 1
     fi
