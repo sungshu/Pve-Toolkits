@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.29
-# Updated: 2026-10-08
+# Version: 2.0.30
+# Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.29"
-UPDATED="2026-10-08"
+SCRIPT_VERSION="2.0.30"
+UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
@@ -944,16 +944,49 @@ create_change_backup()
 {
     local change_id="$1"
     local target="${BACKUP_DIR}/${change_id}"
+    local staging="${BACKUP_DIR}/.${change_id}.tmp.$$"
     ensure_dirs
-    mkdir -p "${target}"
-    cp -a /etc/network/interfaces "${target}/interfaces"
-    [[ -f "${STATE_FILE}" ]] && cp -a "${STATE_FILE}" "${target}/state"
-    ip -details address show > "${target}/ip-address"
-    ip route show table all > "${target}/ip-route"
-    ip -details link show > "${target}/ip-link"
-    pvecm status > "${target}/cluster-status" 2>&1 || true
-}
 
+    if [[ -z "${change_id}" || -e "${target}" ]]; then
+        log_error "Backup Change ID 無效或已存在：${change_id}"
+        return 1
+    fi
+    rm -rf -- "${staging}"
+    if ! mkdir -m 0700 -- "${staging}"; then
+        log_error "無法建立 Backup 暫存目錄：${staging}"
+        return 1
+    fi
+    if ! cp -a /etc/network/interfaces "${staging}/interfaces" || [[ ! -s "${staging}/interfaces" ]]; then
+        rm -rf -- "${staging}"
+        log_error "無法建立有效的 /etc/network/interfaces Backup。"
+        return 1
+    fi
+    if [[ -f "${STATE_FILE}" ]] && ! cp -a "${STATE_FILE}" "${staging}/state"; then
+        rm -rf -- "${staging}"
+        log_error "無法備份 PVE NETWORK PRO State。"
+        return 1
+    fi
+    if ! ip -details address show > "${staging}/ip-address" ||
+       ! ip route show table all > "${staging}/ip-route" ||
+       ! ip -details link show > "${staging}/ip-link"; then
+        rm -rf -- "${staging}"
+        log_error "無法完整擷取 Runtime 網路狀態，取消 Backup。"
+        return 1
+    fi
+    pvecm status > "${staging}/cluster-status" 2>&1 || true
+    date '+%Y-%m-%d %H:%M:%S %z' > "${staging}/created-at" || {
+        rm -rf -- "${staging}"
+        log_error "無法寫入 Backup 時間資訊。"
+        return 1
+    }
+    if ! mv -- "${staging}" "${target}"; then
+        rm -rf -- "${staging}"
+        log_error "無法完成 Backup 提交：${target}"
+        return 1
+    fi
+    log_ok "Backup 建立完成：${target}"
+    return 0
+}
 validate_recovery_state()
 {
     local management_dev management_ip gateway
@@ -992,32 +1025,87 @@ restore_change_backup()
 {
     local change_id="$1"
     local source="${2:-${BACKUP_DIR}/${change_id}/interfaces}"
+    local state_source="${3:-}"
+    local recovery_path="${RECOVERY_DIR}/${change_id}"
+    local rollback_path="" rollback_state="" had_state=0
 
-    [[ -f "${source}" ]] || {
-        log_error "找不到 Recovery Source：${source}"
+    [[ -f "${source}" && -s "${source}" ]] || {
+        log_error "找不到有效 Recovery Source：${source}"
         return 1
     }
+    if [[ -z "${state_source}" && -f "${BACKUP_DIR}/${change_id}/state" ]]; then
+        state_source="${BACKUP_DIR}/${change_id}/state"
+    fi
+    if [[ -n "${state_source}" && ! -f "${state_source}" ]]; then
+        log_error "找不到 Recovery State Source：${state_source}"
+        return 1
+    fi
+    ensure_dirs
+    mkdir -p "${recovery_path}" || { log_error "無法建立 Recovery 記錄目錄：${recovery_path}"; return 1; }
 
-    install -m 0644 "${source}" /etc/network/interfaces
+    rollback_path="$(mktemp "${recovery_path}/interfaces.before.XXXXXX")" || { log_error "無法建立 Recovery 前設定快照。"; return 1; }
+    if ! cp -a /etc/network/interfaces "${rollback_path}"; then
+        rm -f -- "${rollback_path}"
+        log_error "無法保存 Recovery 前的 interfaces，停止還原。"
+        return 1
+    fi
+    if [[ -f "${STATE_FILE}" ]]; then
+        rollback_state="$(mktemp "${recovery_path}/state.before.XXXXXX")" || { rm -f -- "${rollback_path}"; log_error "無法建立 Recovery 前 State 快照。"; return 1; }
+        if ! cp -a "${STATE_FILE}" "${rollback_state}"; then
+            rm -f -- "${rollback_path}" "${rollback_state}"
+            log_error "無法保存 Recovery 前 State，停止還原。"
+            return 1
+        fi
+        had_state=1
+    fi
+
+    if ! install -m 0644 "${source}" /etc/network/interfaces; then
+        cp -a "${rollback_path}" /etc/network/interfaces
+        rm -f -- "${rollback_path}" "${rollback_state:-}"
+        log_error "無法安裝 Recovery 設定檔；已保留原設定。"
+        return 1
+    fi
     if ! ifreload -a; then
-        log_error "Recovery Apply 失敗。"
+        log_error "Recovery Apply 失敗，嘗試還原 Recovery 前設定。"
+        cp -a "${rollback_path}" /etc/network/interfaces
+        if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
+        if ifreload -a; then log_ok "Recovery 失敗後，已重新套用 Recovery 前設定。"; else log_error "Recovery 前設定已寫回，但 ifreload 仍失敗；需人工檢查 Runtime 網路。"; fi
+        rm -f -- "${rollback_path}" "${rollback_state:-}"
         return 1
     fi
 
-    mkdir -p "${RECOVERY_DIR}/${change_id}"
-    cp -a "${source}" "${RECOVERY_DIR}/${change_id}/interfaces.restored"
-
-    if [[ -f "${BACKUP_DIR}/${change_id}/state" ]]; then
-        cp -a "${BACKUP_DIR}/${change_id}/state" "${STATE_FILE}"
-        cp -a "${BACKUP_DIR}/${change_id}/state" "${RECOVERY_DIR}/${change_id}/state.restored"
+    if [[ -n "${state_source}" ]]; then
+        if ! cp -a "${state_source}" "${STATE_FILE}"; then
+            log_error "Recovery State 還原失敗，嘗試回復 Recovery 前設定。"
+            cp -a "${rollback_path}" /etc/network/interfaces
+            if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
+            ifreload -a || log_error "Recovery 前 Runtime 回復失敗，需人工檢查。"
+            rm -f -- "${rollback_path}" "${rollback_state:-}"
+            return 1
+        fi
+        cp -a "${state_source}" "${recovery_path}/state.restored" || log_error "無法保存 State Recovery 紀錄。"
     fi
 
     if ! validate_recovery_state; then
-        log_error "Recovery Apply 已完成，但 Recovery 狀態驗證失敗。"
+        log_error "Recovery 驗證失敗，嘗試回復 Recovery 前設定與 State。"
+        cp -a "${rollback_path}" /etc/network/interfaces
+        if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
+        if ifreload -a; then log_info "已重新套用 Recovery 前設定；仍請確認管理網路與 Cluster。"; else log_error "Recovery 前設定已寫回，但 Runtime 回復失敗，需人工救援。"; fi
+        rm -f -- "${rollback_path}" "${rollback_state:-}"
         return 1
     fi
-}
-network_pending_configuration_exists()
+
+    if ! cp -a "${source}" "${recovery_path}/interfaces.restored"; then
+        log_error "Recovery 已套用並驗證，但無法保存 Recovery 記錄。"
+        rm -f -- "${rollback_path}" "${rollback_state:-}"
+        return 1
+    fi
+    cp -a "${rollback_path}" "${recovery_path}/interfaces.before-recovery" || log_error "無法保存 Recovery 前設定紀錄。"
+    if ((had_state)); then cp -a "${rollback_state}" "${recovery_path}/state.before-recovery" || log_error "無法保存 Recovery 前 State 紀錄。"; fi
+    rm -f -- "${rollback_path}" "${rollback_state:-}"
+    log_ok "Recovery 設定、State 與管理網路驗證完成。"
+    return 0
+}network_pending_configuration_exists()
 {
     [[ -f /etc/network/interfaces.new && -s /etc/network/interfaces.new ]]
 }
@@ -1066,7 +1154,10 @@ apply_interfaces_file()
         fi
     fi
 
-    create_change_backup "${change_id}"
+    if ! create_change_backup "${change_id}"; then
+        log_error "變更前 Backup 建立失敗，拒絕套用網路設定。"
+        return 1
+    fi
     log_step "套用網路設定：${change_id}"
     install -m 0644 "${source}" /etc/network/interfaces
     if ! ifreload -a; then
@@ -2875,9 +2966,12 @@ rollback_vss()
     echo "============================================================"
     echo ""
 
-    if [[ ! -f "${VSS_DIR}/interfaces.before" ]]; then
-        log_error "找不到 VSS 變更前設定：${VSS_DIR}/interfaces.before"
-        log_error "目前沒有可用的 VSS Recovery 基準。"
+    if [[ ! -s "${VSS_DIR}/interfaces.before" ]]; then
+        log_error "找不到有效的 VSS 變更前設定：${VSS_DIR}/interfaces.before"
+        log_error "不會猜測或自動套用其他時間點的 Backup。"
+        echo ""
+        echo "請返回 Backup / Recovery，使用 Backup History 選擇已知 Change ID，"
+        echo "或在確認內容後使用 Baseline Recovery。"
         pause_screen
         return 0
     fi
@@ -2988,7 +3082,7 @@ rollback_vds()
         log_step "嘗試恢復 Rollback 前的 SDN Zone / VNet。"
 
         local zone_bridge
-        zone_bridge="$(awk -F '\t' -v z="${zone}" '\$1=="VDS_ZONE" && \$2==z {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+        zone_bridge="$(awk -F '\t' -v z="${zone}" '$1=="VDS_ZONE" && $2==z {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
         local recovery_ok=1
 
         if [[ -z "${zone_bridge}" ]]; then
@@ -3005,7 +3099,7 @@ rollback_vds()
             if ((recovery_ok == 1)); then
                 for vnet in "${vnets[@]}"; do
                     local recovery_tag
-                    recovery_tag="$(awk -F '\t' -v n="${vnet}" '\$1=="PORT_GROUP" && \$2==n {print \$3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
+                    recovery_tag="$(awk -F '\t' -v n="${vnet}" '$1=="PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}" 2>/dev/null || true)"
                     if [[ -z "${recovery_tag}" ]] || ! vds_restore_vnet "${zone}" "${vnet}" "${recovery_tag}"; then
                         recovery_ok=0
                         log_error "VDS Rollback Recovery 無法恢復 VNet：${vnet}"
@@ -3087,21 +3181,11 @@ rollback_baseline()
 
     # Recovery 必須繞過一般 apply_interfaces_file() 的 Pending Guard，
     # 否則最後救援機制會在網路故障時被自己阻擋。
-    if ! restore_change_backup "${change_id}" "${BASELINE_DIR}/interfaces.orig"; then
+    if ! restore_change_backup "${change_id}" "${BASELINE_DIR}/interfaces.orig" "${BASELINE_DIR}/objects.conf.orig"; then
         log_error "Baseline Recovery 套用失敗。"
         log_error "目前網路設定未宣告為 Recovery 成功，請檢查 /etc/network/interfaces 與 Runtime 網路狀態。"
         pause_screen
         return 0
-    fi
-
-    # 新版 Baseline 同時保存 Tool State；Recovery 後必須讓 State 回到同一時間點。
-    # 舊版 Baseline 若沒有 objects.conf.orig，不自行猜測歷史 State。
-    if [[ -f "${BASELINE_DIR}/objects.conf.orig" ]]; then
-        cp -a "${BASELINE_DIR}/objects.conf.orig" "${STATE_FILE}"
-        log_ok "PVE NETWORK PRO State 已同步還原。"
-    else
-        log_error "此 Baseline 沒有 objects.conf.orig，無法安全還原歷史 State。"
-        log_error "目前 State 保留不變，請依 Baseline 設定人工確認 Tool-owned 物件。"
     fi
 
     if cluster_quorate; then
@@ -3164,7 +3248,16 @@ backup_history()
         echo "------------------------------------------------------------"
         echo " Change ID：${change_id}"
         echo " Source   ：${backup}/interfaces"
-        echo " State    ：${backup}/state"
+        if [[ -s "${backup}/state" ]]; then
+            echo " State    ：可用"
+        else
+            echo " State    ：無（還原時保留現有 State）"
+        fi
+        if [[ ! -s "${backup}/interfaces" ]]; then
+            log_error "此 Backup 的 interfaces 不存在或為空，拒絕還原。"
+            pause_screen
+            continue
+        fi
         echo "------------------------------------------------------------"
         echo ""
         echo "這是高風險操作，會覆蓋目前 /etc/network/interfaces。"
