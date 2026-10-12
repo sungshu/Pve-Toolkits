@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.45
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.45"
+SCRIPT_VERSION="2.0.46"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3603,7 +3603,7 @@ backup_history()
                 [[ "${candidate_id}" == CHG-* ]] || continue
                 auto_backups+=( "${candidate}" )
                 if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ||
-                      ! "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
+                      ! ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
                       ! -d "${candidate}" || -L "${candidate}" ||
                       ! -s "${candidate}/interfaces" ]]; then
                     invalid_backup="${candidate}"
@@ -3630,7 +3630,7 @@ backup_history()
                 for candidate in "${auto_backups[@]}"; do
                     candidate_id="${candidate##*/}"
                     if [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" &&
-                          "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ &&
+                          ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) &&
                           -d "${candidate}" && ! -L "${candidate}" &&
                           -s "${candidate}/interfaces" ]]; then
                         if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
@@ -3674,7 +3674,7 @@ backup_history()
             d|D)
                 # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
-                      ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
+                      ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
                       ! -d "${backup}" || -L "${backup}" ||
                       ! -s "${backup}/interfaces" ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
