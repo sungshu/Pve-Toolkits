@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.40
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.40"
+SCRIPT_VERSION="2.0.41"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1008,11 +1008,14 @@ write_vss_interfaces()
 
 create_change_id()
 {
-    # 系統變更用 Change ID；與手動 Backup 名稱明確區分。
-    local timestamp suffix
+    # 自動 Backup ID 包含變更用途，方便直接從 Backup History 辨識來源。
+    # 格式：CHG-<用途>-YYYYMMDD-HHMMSS-<nanoseconds>-<random>
+    local label="${1:-network}" timestamp suffix
+    label="$(printf '%s' "${label}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "${label}" ]] || label="network"
     timestamp="$(date '+%Y%m%d-%H%M%S-%N')"
     suffix="${RANDOM}${RANDOM}"
-    printf 'CHG-%s-%s' "${timestamp}" "${suffix}"
+    printf 'CHG-%s-%s-%s' "${label}" "${timestamp}" "${suffix}"
 }
 
 create_manual_backup_id()
@@ -1589,7 +1592,7 @@ ensure_bridge_vlan_aware()
         return 1
     }
 
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "vss-vlan-aware-${bridge}")"
     if ! apply_interfaces_file "${change_id}" "${temp}"; then
         rm -f "${source}" "${temp}"
         return 1
@@ -1602,8 +1605,9 @@ ensure_bridge_vlan_aware()
 apply_interfaces()
 {
     local source="$1"
+    local purpose="${2:-network-apply}"
     local change_id
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "${purpose}")"
     [[ -f "${source}" ]] || { log_error "找不到要套用的網路設定。"; return 1; }
     apply_interfaces_file "${change_id}" "${source}"
 }
@@ -1687,7 +1691,7 @@ iface ${bridge} inet manual
     bridge-vids 2-4094
 EOF
 
-    if ! apply_interfaces "${generated_file}"; then
+    if ! apply_interfaces "${generated_file}" "vss-${bridge}"; then
         log_error "VSS ${bridge} 建立 / 套用失敗。"
         cp -a "${VSS_DIR}/interfaces.before" /etc/network/interfaces
         ifreload -a || true
@@ -1700,7 +1704,7 @@ EOF
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS ${bridge} 驗證失敗，開始 Recovery。"
         local recovery_change_id
-        recovery_change_id="$(create_change_id)"
+        recovery_change_id="$(create_change_id "recovery-vss-${bridge}")"
         if restore_change_backup "${recovery_change_id}" "${VSS_DIR}/interfaces.before"; then
             log_ok "VSS ${bridge} 已依變更前設定完成 Recovery。"
         else
@@ -1849,7 +1853,7 @@ vss_uplink_add()
         return 1
     fi
 
-    if ! apply_interfaces "${GENERATED_INTERFACES_FILE}"; then
+    if ! apply_interfaces "${GENERATED_INTERFACES_FILE}" "vss-uplink-${bridge}"; then
         rm -f "${GENERATED_INTERFACES_FILE}"
         GENERATED_INTERFACES_FILE=""
         log_error "VSS Uplink 套用失敗，立即嘗試還原。"
@@ -1864,7 +1868,7 @@ vss_uplink_add()
     if ! validate_network_after_change "${bridge}"; then
         log_error "VSS Uplink 驗證失敗，開始 Recovery。"
         local recovery_change_id
-        recovery_change_id="$(create_change_id)"
+        recovery_change_id="$(create_change_id "recovery-uplink-${bridge}")"
         if apply_interfaces_file "${recovery_change_id}" "${VSS_DIR}/interfaces.before-uplink"; then
             log_ok "VSS Uplink 已依變更前設定完成 Recovery。"
         else
@@ -1884,7 +1888,7 @@ vss_uplink_add()
          ! save_state "VSS" "bond_lacp_rate" "${BOND_LACP_RATE:-none}"; then
         log_error "VSS Uplink 已套用，但 State 寫入失敗。"
         local state_recovery_id
-        state_recovery_id="$(create_change_id)"
+        state_recovery_id="$(create_change_id "recovery-uplink-state-${bridge}")"
         if apply_interfaces_file "${state_recovery_id}" "${VSS_DIR}/interfaces.before-uplink"; then
             log_ok "VSS Uplink State 失敗後已完成 Runtime Recovery。"
         else
@@ -2629,7 +2633,7 @@ iface ${vnet} inet manual
 EOF
 
     local change_id
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "vss-${vnet}")"
     log_step "已完成設定整理，準備 Backup 並套用網路設定。"
     if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
         rm -f "${generated_file}"
@@ -2954,7 +2958,7 @@ vss_port_group_delete()
     done
 
     local change_id
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "vss-portgroup-delete")"
     if ! apply_interfaces_file "${change_id}" "${generated_file}"; then
         rm -f "${generated_file}"
         log_error "VSS Port Group 刪除失敗，已嘗試 Recovery。"
@@ -3184,7 +3188,7 @@ rollback_vss()
     if ! ensure_network_backup; then return 0; fi
 
     local change_id
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "vss-recovery")"
     cp -a /etc/network/interfaces "${VSS_DIR}/interfaces.current-before-rollback"
     if ! apply_interfaces_file "${change_id}" "${VSS_DIR}/interfaces.before"; then
         log_error "VSS Recovery 套用失敗。"
@@ -3373,7 +3377,7 @@ rollback_baseline()
     fi
 
     local change_id
-    change_id="$(create_change_id)"
+    change_id="$(create_change_id "baseline-recovery")"
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date '+%Y%m%d-%H%M%S-%N')"
 
     # Recovery 必須繞過一般 apply_interfaces_file() 的 Pending Guard，
@@ -3408,7 +3412,7 @@ backup_history()
             while read -r backup; do
                 [[ -n "${backup}" ]] || continue
                 backups+=( "${backup}" )
-            done < <(find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '%h\n' 2>/dev/null | sort -u)
+            done < <(find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '%T@ %h\n' 2>/dev/null | sort -nr | cut -d' ' -f2- | awk '!seen[$0]++')
         fi
 
         if ((${#backups[@]} == 0)); then
@@ -3425,7 +3429,8 @@ backup_history()
         echo "   A) 全部刪除 Backup"
         echo "   0) 返回"
         echo ""
-        echo "MANUAL-* 為手動備份；CHG-* 為網路變更前自動備份。"
+        echo "CHG-<用途>-<時間>-<序號> 為自動備份；MANUAL-* 為手動備份。"
+        echo "A 全部刪除只清除 CHG-* 自動備份；MANUAL-* 需逐筆選取 d 刪除。"
         echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
         echo "全部刪除只處理符合安全條件的 Backup，不會刪除 Baseline 或 Recovery。"
 
@@ -3434,11 +3439,15 @@ backup_history()
             return 0
         fi
         if [[ "${choice}" =~ ^[aA]$ ]]; then
+            local -a auto_backups=()
             local invalid_backup="" candidate candidate_id
             for candidate in "${backups[@]}"; do
                 candidate_id="${candidate##*/}"
+                # 全部刪除僅涵蓋 CHG-* 自動備份；MANUAL-* 永遠不會進入批次刪除清單。
+                [[ "${candidate_id}" == CHG-* ]] || continue
+                auto_backups+=( "${candidate}" )
                 if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ||
-                      ! "${candidate_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
+                      ! "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
                       ! -d "${candidate}" || -L "${candidate}" ||
                       ! -s "${candidate}/interfaces" ]]; then
                     invalid_backup="${candidate}"
@@ -3446,25 +3455,30 @@ backup_history()
                 fi
             done
             if [[ -n "${invalid_backup}" ]]; then
-                log_error "發現不符合安全條件的 Backup：${invalid_backup}"
+                log_error "發現不符合安全條件的自動 Backup：${invalid_backup}"
                 log_error "為避免部分刪除，已取消全部刪除；未刪除任何 Backup。"
                 pause_screen
                 continue
             fi
+            if (("${#auto_backups[@]}" == 0)); then
+                log_info "目前沒有可批次刪除的 CHG-* 自動 Backup；MANUAL-* 手動備份需逐筆刪除。"
+                pause_screen
+                continue
+            fi
             echo ""
-            echo "即將永久刪除全部 ${#backups[@]} 個 Backup："
-            printf '  - %s\n' "${backups[@]##*/}"
-            echo "僅刪除 ${BACKUP_DIR} 下通過安全檢查的 Backup。"
-            echo "不會刪除 Baseline、Recovery 或其他目錄。"
-            if confirm "確定永久刪除全部 ${#backups[@]} 個 Backup？"; then
+            echo "即將永久刪除全部 ${#auto_backups[@]} 個 CHG-* 自動 Backup："
+            printf '  - %s\n' "${auto_backups[@]##*/}"
+            echo "MANUAL-* 手動 Backup 不會被刪除；Baseline、Recovery 及其他目錄也不會被刪除。"
+            if confirm "確定永久刪除全部 ${#auto_backups[@]} 個自動 Backup？"; then
                 local delete_failed=0
-                for candidate in "${backups[@]}"; do
+                for candidate in "${auto_backups[@]}"; do
                     candidate_id="${candidate##*/}"
                     if [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" &&
+                          "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ &&
                           -d "${candidate}" && ! -L "${candidate}" &&
                           -s "${candidate}/interfaces" ]]; then
                         if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
-                            log_ok "已刪除：${candidate_id}"
+                            log_ok "已刪除自動 Backup：${candidate_id}"
                         else
                             log_error "刪除失敗：${candidate_id}"
                             delete_failed=1
@@ -3475,9 +3489,9 @@ backup_history()
                     fi
                 done
                 if ((delete_failed == 0)); then
-                    log_ok "全部 ${#backups[@]} 個 Backup 已刪除。"
+                    log_ok "全部 ${#auto_backups[@]} 個自動 Backup 已刪除；MANUAL-* 手動備份已保留。"
                 else
-                    log_error "全部刪除未完整完成，請檢查上方結果；不會自動重試。"
+                    log_error "自動 Backup 批次刪除未完整完成，請檢查上方結果；不會自動重試。"
                 fi
             else
                 log_info "已取消全部刪除。"
@@ -3504,7 +3518,7 @@ backup_history()
             d|D)
                 # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
-                      ! "${change_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
+                      ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
                       ! -d "${backup}" || -L "${backup}" ||
                       ! -s "${backup}/interfaces" ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
@@ -3564,7 +3578,7 @@ backup_history()
         fi
 
         local current_backup
-        current_backup="$(create_change_id)"
+        current_backup="$(create_change_id "recovery-safety")"
         if ! create_change_backup "${current_backup}"; then
             log_error "無法保存目前網路設定，停止 Backup Recovery。"
             pause_screen
