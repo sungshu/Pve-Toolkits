@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.31
+# Version: 2.0.32
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.31"
+SCRIPT_VERSION="2.0.32"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3392,6 +3392,66 @@ backup_history()
     done
 }
 
+backup_now()
+{
+    show_header
+    echo "============================================================"
+    echo " Backup Now - 備份目前網路狀態"
+    echo "============================================================"
+    echo ""
+    echo "將保存目前的網路設定、工具 State、Runtime IP / Route / Link 與 Cluster 狀態。"
+    echo "本操作不會套用或變更網路設定，也不會覆寫 Baseline 或既有 Backup。"
+    echo ""
+
+    if [[ ! -s /etc/network/interfaces ]]; then
+        log_error "目前 /etc/network/interfaces 不存在或為空，取消 Backup。"
+        pause_screen
+        return 1
+    fi
+
+    local change_id target
+    change_id="$(create_change_id)"
+    target="${BACKUP_DIR}/${change_id}"
+
+    if ! create_change_backup "${change_id}"; then
+        log_error "手動 Backup 失敗。"
+        pause_screen
+        return 1
+    fi
+
+    echo ""
+    echo "------------------------------------------------------------"
+    echo " Backup 驗證"
+    echo "------------------------------------------------------------"
+    echo " Change ID：${change_id}"
+    echo " 路徑     ：${target}"
+    echo ""
+    local file
+    for file in interfaces state ip-address ip-route ip-link cluster-status created-at; do
+        if [[ -f "${target}/${file}" ]]; then
+            printf "  %-16s %s bytes\n" "${file}" "$(stat -c '%s' "${target}/${file}")"
+        else
+            printf "  %-16s %s\n" "${file}" "未產生（State 可能尚不存在）"
+        fi
+    done
+    echo ""
+    if [[ -s "${target}/interfaces" ]] &&
+       [[ -f "${target}/ip-address" ]] &&
+       [[ -f "${target}/ip-route" ]] &&
+       [[ -f "${target}/ip-link" ]] &&
+       [[ -f "${target}/created-at" ]]; then
+        sha256sum "${target}/interfaces" "${target}/ip-address" "${target}/ip-route" "${target}/ip-link"
+        log_ok "手動 Backup 完成，必要檔案驗證通過。"
+    else
+        log_error "Backup 已建立，但必要檔案驗證未通過，請檢查目錄：${target}"
+        pause_screen
+        return 1
+    fi
+
+    pause_screen
+    return 0
+}
+
 rollback_menu()
 {
     while true; do
@@ -3400,20 +3460,22 @@ rollback_menu()
         echo " Backup / Recovery"
         echo "============================================================"
         echo ""
-        echo "  1) Backup History"
-        echo "  2) VSS - 還原 VSS 變更前設定"
-        echo "  3) VDS - 還原本工具建立的 SDN 物件"
-        echo "  4) Baseline - 還原最初網路設定"
+        echo "  1) Backup Now - 備份目前網路狀態"
+        echo "  2) Backup History - 備份歷史"
+        echo "  3) VSS - 還原 VSS 變更前設定"
+        echo "  4) VDS - 還原本工具建立的 SDN 物件"
+        echo "  5) Baseline - 還原最初網路設定"
         echo "  0) 返回"
         echo ""
 
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) backup_history ;;
-            2) rollback_vss ;;
-            3) rollback_vds ;;
-            4) rollback_baseline ;;
+            1) backup_now ;;
+            2) backup_history ;;
+            3) rollback_vss ;;
+            4) rollback_vds ;;
+            5) rollback_baseline ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
