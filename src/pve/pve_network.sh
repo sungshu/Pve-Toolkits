@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.42
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.42"
+SCRIPT_VERSION="2.0.43"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1063,6 +1063,21 @@ create_change_backup()
         return 1
     fi
     pvecm status > "${staging}/cluster-status" 2>&1 || true
+    # 同一筆 Backup 也保存 SDN 設定快照，讓 VDS 變更前的 Zone / VNet 有可查證的來源資料。
+    if [[ -r /etc/pve/sdn.cfg ]]; then
+        if ! cp -a /etc/pve/sdn.cfg "${staging}/sdn.cfg"; then
+            rm -rf -- "${staging}"
+            log_error "無法備份 Proxmox SDN 設定檔 /etc/pve/sdn.cfg。"
+            return 1
+        fi
+        : > "${staging}/sdn-config-present"
+    else
+        : > "${staging}/sdn-config-absent"
+    fi
+    if command -v pvesh >/dev/null 2>&1; then
+        pvesh get /cluster/sdn/zones --output-format json > "${staging}/sdn-zones.json" 2>/dev/null || true
+        pvesh get /cluster/sdn/vnets --output-format json > "${staging}/sdn-vnets.json" 2>/dev/null || true
+    fi
     date '+%Y-%m-%d %H:%M:%S %z' > "${staging}/created-at" || {
         rm -rf -- "${staging}"
         log_error "無法寫入 Backup 時間資訊。"
@@ -1076,6 +1091,21 @@ create_change_backup()
     log_ok "Backup 建立完成：${target}"
     return 0
 }
+
+create_vds_change_backup()
+{
+    local purpose="$1"
+    local change_id
+    change_id="$(create_change_id "vds-${purpose}")"
+    if ! create_change_backup "${change_id}"; then
+        log_error "VDS 變更前 Backup 建立失敗，拒絕繼續操作：${purpose}"
+        return 1
+    fi
+    VDS_CHANGE_BACKUP_ID="${change_id}"
+    log_info "VDS 變更前 SDN 快照已保存：${BACKUP_DIR}/${change_id}"
+    return 0
+}
+
 validate_recovery_state()
 {
     local management_dev management_ip gateway
@@ -2334,6 +2364,10 @@ vds_configure()
             pause_screen
             return 0
         fi
+        if ! create_vds_change_backup "zone-${SDN_ZONE}"; then
+            pause_screen
+            return 1
+        fi
         if ! vds_create_zone "${SDN_ZONE}" "${SDN_BRIDGE}"; then
             log_error "SDN Zone 建立失敗：${SDN_ZONE}"
             pause_screen
@@ -2721,6 +2755,10 @@ vds_port_group_create()
         break
     done
     if ! confirm "確認建立 VDS Port Group ${vnet} / VLAN ${tag}？"; then pause_screen; return 0; fi
+    if ! create_vds_change_backup "portgroup-${vnet}"; then
+        pause_screen
+        return 1
+    fi
     if ! vds_create_vnet "${zone}" "${vnet}" "${tag}"; then
         log_error "VDS Port Group 建立失敗。"
         pause_screen
@@ -2798,6 +2836,10 @@ vds_port_group_delete()
         log_error "選擇無效。"
     done
     if ! confirm "確認刪除 VDS Port Group ${vnet}？"; then pause_screen; return 0; fi
+    if ! create_vds_change_backup "portgroup-delete-${vnet}"; then
+        pause_screen
+        return 1
+    fi
     if ! vds_delete_vnet "${vnet}"; then
         log_error "VDS Port Group 刪除失敗：${vnet}"
         pause_screen
@@ -3099,7 +3141,13 @@ show_current_network()
     echo -e "${CYAN}------------------------------------------------------------${NC}"
     ip -br link show type bridge 2>/dev/null | while IFS= read -r line; do echo -e "${GREEN}${line}${NC}"; done || true
     echo ""
-    ip -br addr show || true
+    ip -br addr show 2>/dev/null | while IFS= read -r line; do
+        case "${line}" in
+            *UP*)   echo -e "${GREEN}${line}${NC}" ;;
+            *DOWN*) echo -e "${YELLOW}${line}${NC}" ;;
+            *)      echo -e "${BLUE}${line}${NC}" ;;
+        esac
+    done || true
 
     echo ""
     echo -e "${CYAN}------------------------------------------------------------${NC}"
