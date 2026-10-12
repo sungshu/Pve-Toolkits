@@ -3426,13 +3426,13 @@ backup_history()
             printf "  %2d) %s\n" "${i}" "${backup}"
             i=$((i + 1))
         done
-        echo "   A) 全部刪除 Backup"
+        echo "   A) 全部刪除 CHG-* 自動 Backup"
         echo "   0) 返回"
         echo ""
         echo "CHG-<用途>-<時間>-<序號> 為自動備份；MANUAL-* 為手動備份。"
         echo "A 全部刪除只清除 CHG-* 自動備份；MANUAL-* 需逐筆選取 d 刪除。"
         echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
-        echo "全部刪除只處理符合安全條件的 Backup，不會刪除 Baseline 或 Recovery。"
+        echo "全部刪除只處理符合安全條件的 CHG-* 自動 Backup；不會刪除 MANUAL-*、Baseline 或 Recovery。"
 
         read -r -p "請選擇 Backup 編號（A 全部刪除，0 返回）：" choice
         if [[ "${choice}" == "0" ]]; then
