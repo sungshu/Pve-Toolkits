@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.38
+# Version: 2.0.39
 # Updated: 2026-10-12
 
 SCRIPT_VERSION="2.0.39"
