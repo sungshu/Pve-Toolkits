@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.42
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.43"
+SCRIPT_VERSION="2.0.44"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -754,7 +754,7 @@ show_baseline()
         [[ -f "${BASELINE_DIR}/created-at" ]] && echo "建立時間：$(cat "${BASELINE_DIR}/created-at")"
         echo ""
         echo "保存檔案："
-        find "${BASELINE_DIR}" -maxdepth 1 -type f -printf '  - %f\\n' | sort
+        find "${BASELINE_DIR}" -maxdepth 1 -type f -printf '  - %f\n' | sort
     elif baseline_artifacts_exist; then
         echo "狀態：不完整（禁止覆蓋）"
         echo "位置：${BASELINE_DIR}"
@@ -1960,7 +1960,7 @@ vss_show()
             while read -r uplink; do
                 [[ -n "${uplink}" ]] || continue
                 ports+=("${uplink}")
-            done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\\n" 2>/dev/null | sort -V)
+            done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\n" 2>/dev/null | sort -V)
         fi
 
         if (("${#ports[@]}" == 0)); then
@@ -3129,9 +3129,9 @@ show_current_network()
         local nic_state
         nic_state="$(get_link_state "${nic}")"
         if [[ "${nic_state}" == "up" ]]; then
-            printf "  ${BLUE}%-12s${NC} %-12s ${GREEN}%s${NC}\\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
+            printf "  ${BLUE}%-12s${NC} %-12s ${GREEN}%s${NC}\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
         else
-            printf "  ${BLUE}%-12s${NC} %-12s ${YELLOW}%s${NC}\\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
+            printf "  ${BLUE}%-12s${NC} %-12s ${YELLOW}%s${NC}\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
         fi
     done < <(get_physical_nics)
 
@@ -3482,11 +3482,11 @@ backup_history()
         for backup in "${backups[@]}"; do
             local backup_id="${backup##*/}"
             case "${backup_id}" in
-                CHG-vss-*) printf "  %2d) ${CYAN}%s${NC}  ${BLUE}[VSS 自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
-                CHG-vds-*) printf "  %2d) ${CYAN}%s${NC}  ${MAGENTA}[VDS 自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
-                CHG-*)     printf "  %2d) ${CYAN}%s${NC}  ${YELLOW}[網路變更自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
-                MANUAL-*)  printf "  %2d) ${GREEN}%s${NC}  [手動備份]\\n" "${i}" "${backup_id}" ;;
-                *)         printf "  %2d) %s\\n" "${i}" "${backup_id}" ;;
+                CHG-vss-*) printf "  %2d) ${CYAN}%s${NC}  ${BLUE}[VSS 自動備份]${NC}\n" "${i}" "${backup_id}" ;;
+                CHG-vds-*) printf "  %2d) ${CYAN}%s${NC}  ${MAGENTA}[VDS 自動備份]${NC}\n" "${i}" "${backup_id}" ;;
+                CHG-*)     printf "  %2d) ${CYAN}%s${NC}  ${YELLOW}[網路變更自動備份]${NC}\n" "${i}" "${backup_id}" ;;
+                MANUAL-*)  printf "  %2d) ${GREEN}%s${NC}  [手動備份]\n" "${i}" "${backup_id}" ;;
+                *)         printf "  %2d) %s\n" "${i}" "${backup_id}" ;;
             esac
             i=$((i + 1))
         done
