@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.35
+# Version: 2.0.36
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.35"
+SCRIPT_VERSION="2.0.36"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1152,6 +1152,23 @@ restore_change_backup()
         log_error "無法安裝 Recovery 設定檔；已保留原設定。"
         return 1
     fi
+
+    # 關鍵：在 ifreload 前，依目前 State 找出工具管理、但目標 Backup 已不再定義的
+    # Port Group / VLAN Interface，先清除其 Runtime 殘留與過期 State 參照。
+    # 避免 ifupdown2 在套用目標設定時仍沿用舊 Port Group，因不存在的 brif 目錄而失敗。
+    log_step "Recovery 前同步清理過期 VSS Port Group / VLAN Runtime Object"
+    if ! vss_reconcile_state_after_recovery "${source}"; then
+        log_error "Recovery 前 Port Group 狀態同步失敗，停止套用。"
+        cp -a "${rollback_path}" /etc/network/interfaces || true
+        if ((had_state)); then
+            cp -a "${rollback_state}" "${STATE_FILE}" || true
+        else
+            rm -f -- "${STATE_FILE}" || true
+        fi
+        rm -f -- "${rollback_path}" "${rollback_state:-}"
+        return 1
+    fi
+
     if ! ifreload -a; then
         local failure_stamp
         failure_stamp="$(date '+%Y%m%d-%H%M%S-%N')"
@@ -1211,6 +1228,14 @@ restore_change_backup()
             return 1
         fi
         cp -a "${state_source}" "${recovery_path}/state.restored" || log_error "無法保存 State Recovery 紀錄。"
+        # State 還原後再同步一次，移除 Backup State 中仍不屬於目標設定的過期 Port Group。
+        if ! vss_reconcile_state_after_recovery "${source}"; then
+            log_error "Recovery State 與目標設定同步失敗。"
+            cp -a "${rollback_path}" /etc/network/interfaces || true
+            if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}" || true; else rm -f -- "${STATE_FILE}" || true; fi
+            rm -f -- "${rollback_path}" "${rollback_state:-}"
+            return 1
+        fi
     fi
 
     if ! validate_recovery_state; then
