@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.42
+# Version: 2.0.45
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.44"
+SCRIPT_VERSION="2.0.45"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1083,13 +1083,100 @@ create_change_backup()
         log_error "無法寫入 Backup 時間資訊。"
         return 1
     }
+    # 建立完整性清單；驗證失敗的備份不得留下來冒充有效 Backup。
+    if ! ( cd "${staging}" && sha256sum interfaces ip-address ip-route ip-link created-at > SHA256SUMS ); then
+        rm -rf -- "${staging}"
+        log_error "無法建立 Backup SHA256 完整性清單。"
+        return 1
+    fi
+    if [[ -f "${staging}/state" ]] && ! ( cd "${staging}" && sha256sum state >> SHA256SUMS ); then
+        rm -rf -- "${staging}"
+        log_error "無法驗證 Backup State。"
+        return 1
+    fi
+    if [[ -f "${staging}/sdn.cfg" ]] && ! ( cd "${staging}" && sha256sum sdn.cfg >> SHA256SUMS ); then
+        rm -rf -- "${staging}"
+        log_error "無法驗證 Backup SDN 設定。"
+        return 1
+    fi
     if ! mv -- "${staging}" "${target}"; then
         rm -rf -- "${staging}"
         log_error "無法完成 Backup 提交：${target}"
         return 1
     fi
-    log_ok "Backup 建立完成：${target}"
+    if ! validate_change_backup "${target}"; then
+        rm -rf -- "${target}"
+        log_error "Backup 完整性驗證失敗，已移除無效自動 Backup；停止網路變更。"
+        return 1
+    fi
+    log_ok "Backup 建立完成且完整性驗證通過：${target}"
+    if [[ "${change_id}" == CHG-vss-* || "${change_id}" == CHG-vds-* ]]; then
+        prune_previous_direction_backups "${change_id}"
+    fi
     return 0
+}
+
+validate_change_backup()
+{
+    local backup_dir="$1"
+    local required
+
+    [[ -d "${backup_dir}" && ! -L "${backup_dir}" ]] || return 1
+    for required in interfaces ip-address ip-route ip-link created-at; do
+        [[ -s "${backup_dir}/${required}" ]] || {
+            log_error "自動 Backup 缺少必要檔案或內容為空：${required}"
+            return 1
+        }
+    done
+    if [[ -f "${backup_dir}/state" && ! -s "${backup_dir}/state" ]]; then
+        log_error "Backup State 存在但內容為空。"
+        return 1
+    fi
+    if [[ -e "${backup_dir}/sdn-config-present" ]]; then
+        [[ -s "${backup_dir}/sdn.cfg" ]] || {
+            log_error "Backup 標示有 SDN 設定，但 sdn.cfg 不存在或為空。"
+            return 1
+        }
+    elif [[ ! -e "${backup_dir}/sdn-config-absent" ]]; then
+        log_error "Backup 缺少 SDN 設定存在性標記。"
+        return 1
+    fi
+    ( cd "${backup_dir}" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || {
+        log_error "Backup SHA256 完整性驗證失敗：${backup_dir}"
+        return 1
+    }
+    return 0
+}
+
+prune_previous_direction_backups()
+{
+    local new_id="$1"
+    local prefix=""
+    local candidate candidate_id
+
+    case "${new_id}" in
+        CHG-vss-*) prefix="CHG-vss-" ;;
+        CHG-vds-*) prefix="CHG-vds-" ;;
+        *) return 0 ;;
+    esac
+
+    # 每個大方向僅保留最新一筆已驗證的自動 Backup；手動 Backup 永不參與清理。
+    # 新 Backup 已完整建立並通過 SHA256 驗證後才清理舊檔，避免先刪掉唯一可用復原點。
+    while IFS= read -r candidate; do
+        [[ -n "${candidate}" ]] || continue
+        candidate_id="${candidate##*/}"
+        [[ "${candidate_id}" == "${new_id}" ]] && continue
+        [[ "${candidate_id}" == "${prefix}"* ]] || continue
+        [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" && -d "${candidate}" && ! -L "${candidate}" ]] || {
+            log_error "舊自動 Backup 路徑安全檢查失敗，保留不刪：${candidate}"
+            continue
+        }
+        if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
+            log_info "依大方向保留規則清理舊自動 Backup：${candidate_id}"
+        else
+            log_error "舊自動 Backup 清理失敗：${candidate_id}"
+        fi
+    done < <(find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -printf '%h\n' 2>/dev/null | sort -u)
 }
 
 create_vds_change_backup()
@@ -3493,8 +3580,9 @@ backup_history()
         echo "   A) 全部刪除 CHG-* 自動 Backup"
         echo "   0) 返回"
         echo ""
-        echo "CHG-<用途>-<時間>-<序號> 為自動備份；MANUAL-* 為手動備份。"
-        echo "A 全部刪除只清除 CHG-* 自動備份；MANUAL-* 需逐筆選取 d 刪除。"
+        echo "CHG-vss-* / CHG-vds-* 分別代表 VSS / VDS 自動備份；同一大方向僅保留最新一筆已驗證備份。"
+        echo "MANUAL-* 為手動備份，不受自動清理影響；可在此逐筆選取 d 刪除。"
+        echo "A 全部刪除只清除 CHG-* 自動備份；MANUAL-*、Baseline 與 Recovery 不會被批次刪除。"
         echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
         echo "全部刪除只處理符合安全條件的 CHG-* 自動 Backup；不會刪除 MANUAL-*、Baseline 或 Recovery。"
 
@@ -3629,8 +3717,8 @@ backup_history()
         else
             echo " State    ：無（還原時保留現有 State）"
         fi
-        if [[ ! -s "${backup}/interfaces" ]]; then
-            log_error "此 Backup 的 interfaces 不存在或為空，拒絕還原。"
+        if ! validate_change_backup "${backup}"; then
+            log_error "此 Backup 完整性驗證失敗，拒絕還原。"
             pause_screen
             continue
         fi
