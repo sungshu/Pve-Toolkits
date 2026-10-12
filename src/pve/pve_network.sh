@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.30
+# Version: 2.0.31
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.30"
+SCRIPT_VERSION="2.0.31"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -614,60 +614,134 @@ ensure_dirs()
     touch "${STATE_FILE}"
 }
 
+baseline_artifacts_exist()
+{
+    [[ -e "${BASELINE_DIR}/interfaces.orig" ||
+       -e "${BASELINE_DIR}/objects.conf.orig" ||
+       -e "${BASELINE_DIR}/pvecm-status.orig" ||
+       -e "${BASELINE_DIR}/pvecm-nodes.orig" ||
+       -e "${BASELINE_DIR}/ip-address.orig" ||
+       -e "${BASELINE_DIR}/ip-route.orig" ]]
+}
+
+baseline_missing_files()
+{
+    local file
+    for file in interfaces.orig objects.conf.orig pvecm-status.orig pvecm-nodes.orig ip-address.orig ip-route.orig; do
+        case "${file}" in
+            interfaces.orig|pvecm-status.orig|pvecm-nodes.orig|ip-address.orig)
+                [[ -s "${BASELINE_DIR}/${file}" ]] || printf '  - %s\\n' "${file}"
+                ;;
+            *)
+                [[ -f "${BASELINE_DIR}/${file}" ]] || printf '  - %s\\n' "${file}"
+                ;;
+        esac
+    done
+}
+
 baseline_exists()
 {
-    [[ -f "${BASELINE_DIR}/interfaces.orig" &&        -f "${BASELINE_DIR}/objects.conf.orig" &&        -f "${BASELINE_DIR}/pvecm-status.orig" &&        -f "${BASELINE_DIR}/pvecm-nodes.orig" &&        -f "${BASELINE_DIR}/ip-address.orig" &&        -f "${BASELINE_DIR}/ip-route.orig" ]]
+    [[ -s "${BASELINE_DIR}/interfaces.orig" &&
+       -f "${BASELINE_DIR}/objects.conf.orig" &&
+       -s "${BASELINE_DIR}/pvecm-status.orig" &&
+       -s "${BASELINE_DIR}/pvecm-nodes.orig" &&
+       -s "${BASELINE_DIR}/ip-address.orig" &&
+       -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
+
 network_backup_exists()
 {
     baseline_exists && return 0
-    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -print -quit 2>/dev/null | grep -q .
+    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -size +0c -print -quit 2>/dev/null | grep -q .
 }
+
 ensure_network_backup()
 {
-    if network_backup_exists; then return 0; fi
+    if baseline_exists; then return 0; fi
     echo ""
-    echo "尚未建立網路 Backup。"
-    if ! confirm "是否現在建立 Backup？"; then
-        log_info "未建立 Backup，取消此次網路變更。"
+    if baseline_artifacts_exist; then
+        log_error "偵測到不完整的 Baseline；為避免覆蓋原始救援資料，停止網路變更。"
+        echo "缺少的檔案："
+        baseline_missing_files
+        echo "請先檢查並修復 Baseline，不能以一般 Backup 取代初始救援點。"
         pause_screen
         return 1
     fi
-    create_baseline
-    network_backup_exists
+    echo "尚未建立初始 Baseline。"
+    echo "請先確認目前管理 IP、Gateway、SSH 與 PVE 管理介面正常。"
+    if ! confirm "是否現在建立 Baseline？"; then
+        log_info "未建立 Baseline，取消此次網路變更。"
+        pause_screen
+        return 1
+    fi
+    if ! create_baseline || ! baseline_exists; then
+        log_error "Baseline 建立或完整性驗證失敗，取消此次網路變更。"
+        pause_screen
+        return 1
+    fi
+    return 0
 }
 
 create_baseline()
 {
     ensure_dirs
-
     if baseline_exists; then
         log_info "Baseline 已存在，不會自動覆蓋。"
         echo "保存位置：${BASELINE_DIR}"
         return 0
     fi
+    if baseline_artifacts_exist; then
+        log_error "Baseline 檔案不完整，為避免覆蓋原始救援資料，拒絕重新建立。"
+        echo "缺少的檔案："
+        baseline_missing_files
+        echo "請先檢查並修復缺失項目；不可直接覆蓋既有 Baseline。"
+        return 1
+    fi
 
     log_step "建立 Network Baseline"
-    echo ""
-    echo "Baseline 是目前系統的原始退路。"
-    echo ""
-    echo "保存內容："
-    echo "  - /etc/network/interfaces"
-    echo "  - Cluster Status"
-    echo "  - Cluster Nodes"
-    echo "  - IP Address"
-    echo "  - Routing"
-    echo "  - PVE NETWORK PRO State"
-    echo ""
-
-    cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.orig"
-    cp -a "${STATE_FILE}" "${BASELINE_DIR}/objects.conf.orig"
-    pvecm status > "${BASELINE_DIR}/pvecm-status.orig" 2>&1 || true
-    pvecm nodes > "${BASELINE_DIR}/pvecm-nodes.orig" 2>&1 || true
-    ip -details address show > "${BASELINE_DIR}/ip-address.orig"
-    ip route show table all > "${BASELINE_DIR}/ip-route.orig"
-    date '+%Y-%m-%d %H:%M:%S %z' > "${BASELINE_DIR}/created-at"
-
+    echo "建立前請確認管理 IP、Gateway、SSH 與 PVE 管理介面正常。"
+    local staging="${BASE_DIR}/.baseline.tmp.$"
+    rm -rf -- "${staging}"
+    if ! mkdir -m 0700 -- "${staging}"; then
+        log_error "無法建立 Baseline 暫存目錄。"
+        return 1
+    fi
+    if ! cp -a /etc/network/interfaces "${staging}/interfaces.orig" ||
+       ! cp -a "${STATE_FILE}" "${staging}/objects.conf.orig" ||
+       ! ip -details address show > "${staging}/ip-address.orig" ||
+       ! ip route show table all > "${staging}/ip-route.orig" ||
+       ! date '+%Y-%m-%d %H:%M:%S %z' > "${staging}/created-at"; then
+        rm -rf -- "${staging}"
+        log_error "Baseline 擷取失敗；未提交新的 Baseline。"
+        return 1
+    fi
+    if ! pvecm status > "${staging}/pvecm-status.orig" 2>&1; then
+        printf '\\n[INFO] Cluster status command was unavailable during Baseline capture.\\n' >> "${staging}/pvecm-status.orig"
+    fi
+    if ! pvecm nodes > "${staging}/pvecm-nodes.orig" 2>&1; then
+        printf '\\n[INFO] Cluster node list command was unavailable during Baseline capture.\\n' >> "${staging}/pvecm-nodes.orig"
+    fi
+    if [[ ! -s "${staging}/interfaces.orig" ||
+          ! -s "${staging}/pvecm-status.orig" ||
+          ! -s "${staging}/pvecm-nodes.orig" ||
+          ! -s "${staging}/ip-address.orig" ]]; then
+        rm -rf -- "${staging}"
+        log_error "Baseline 必要檔案為空；拒絕提交不完整 Baseline。"
+        return 1
+    fi
+    local file
+    for file in interfaces.orig objects.conf.orig pvecm-status.orig pvecm-nodes.orig ip-address.orig ip-route.orig created-at; do
+        if ! mv -- "${staging}/${file}" "${BASELINE_DIR}/${file}"; then
+            rm -rf -- "${staging}"
+            log_error "Baseline 提交失敗，現有檔案不會被覆蓋：${file}"
+            return 1
+        fi
+    done
+    rmdir -- "${staging}" 2>/dev/null || true
+    if ! baseline_exists; then
+        log_error "Baseline 建立後完整性驗證失敗。"
+        return 1
+    fi
     log_ok "Baseline 建立完成。"
     echo "保存位置：${BASELINE_DIR}"
 }
@@ -679,12 +753,19 @@ show_baseline()
     echo "============================================================"
     echo ""
     if baseline_exists; then
-        echo "狀態：已建立"
+        echo "狀態：完整"
         echo "位置：${BASELINE_DIR}"
         [[ -f "${BASELINE_DIR}/created-at" ]] && echo "建立時間：$(cat "${BASELINE_DIR}/created-at")"
         echo ""
         echo "保存檔案："
-        find "${BASELINE_DIR}" -maxdepth 1 -type f -printf '  - %f\n' | sort
+        find "${BASELINE_DIR}" -maxdepth 1 -type f -printf '  - %f\\n' | sort
+    elif baseline_artifacts_exist; then
+        echo "狀態：不完整（禁止覆蓋）"
+        echo "位置：${BASELINE_DIR}"
+        echo "缺少的檔案："
+        baseline_missing_files
+        echo ""
+        echo "請先檢查原始救援資料，再決定如何修復。"
     else
         echo "狀態：尚未建立"
     fi
@@ -1012,12 +1093,15 @@ validate_recovery_state()
         return 1
     fi
 
-    if ! cluster_quorate; then
-        log_error "Recovery 後 Cluster Quorum 不正常。"
-        return 1
+    if cluster_joined; then
+        if ! cluster_quorate; then
+            log_error "Recovery 後 Cluster Quorum 不正常。"
+            return 1
+        fi
+        log_ok "Recovery 驗證完成：${management_dev} / ${management_ip} / ${gateway} / Cluster Quorum 正常。"
+    else
+        log_ok "Recovery 管理網路驗證完成：${management_dev} / ${management_ip} / ${gateway}；此節點未加入可驗證的 Cluster。"
     fi
-
-    log_ok "Recovery 驗證完成：${management_dev} / ${management_ip} / ${gateway} / Cluster Quorum 正常。"
     return 0
 }
 
