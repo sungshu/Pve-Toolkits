@@ -649,12 +649,6 @@ baseline_exists()
        -f "${BASELINE_DIR}/ip-route.orig" ]]
 }
 
-network_backup_exists()
-{
-    baseline_exists && return 0
-    find "${BACKUP_DIR}" -mindepth 2 -maxdepth 2 -type f -name interfaces -size +0c -print -quit 2>/dev/null | grep -q .
-}
-
 ensure_network_backup()
 {
     if baseline_exists; then return 0; fi
@@ -3444,29 +3438,6 @@ baseline_menu()
         case "${choice}" in
             1) show_header; show_baseline; pause_screen ;;
             2) show_header; create_baseline; pause_screen ;;
-            0) return 0 ;;
-            *) log_error "選擇無效。"; sleep 1 ;;
-        esac
-    done
-}
-
-network_objects_menu()
-{
-    while true; do
-        show_header
-        echo "============================================================"
-        echo " Network Objects"
-        echo "============================================================"
-        echo ""
-        echo "  1) Virtual Switch / VSS"
-        echo "  2) Distributed Virtual Switch / VDS"
-        echo "  0) 返回"
-        echo ""
-        local choice
-        read -r -p "請選擇：" choice
-        case "${choice}" in
-            1) vss_setup ;;
-            2) vds_setup ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
