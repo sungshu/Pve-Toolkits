@@ -630,10 +630,10 @@ baseline_missing_files()
     for file in interfaces.orig objects.conf.orig pvecm-status.orig pvecm-nodes.orig ip-address.orig ip-route.orig; do
         case "${file}" in
             interfaces.orig|pvecm-status.orig|pvecm-nodes.orig|ip-address.orig)
-                [[ -s "${BASELINE_DIR}/${file}" ]] || printf '  - %s\\n' "${file}"
+                [[ -s "${BASELINE_DIR}/${file}" ]] || printf '  - %s\n' "${file}"
                 ;;
             *)
-                [[ -f "${BASELINE_DIR}/${file}" ]] || printf '  - %s\\n' "${file}"
+                [[ -f "${BASELINE_DIR}/${file}" ]] || printf '  - %s\n' "${file}"
                 ;;
         esac
     done
@@ -716,10 +716,10 @@ create_baseline()
         return 1
     fi
     if ! pvecm status > "${staging}/pvecm-status.orig" 2>&1; then
-        printf '\\n[INFO] Cluster status command was unavailable during Baseline capture.\\n' >> "${staging}/pvecm-status.orig"
+        printf '\n[INFO] Cluster status command was unavailable during Baseline capture.\n' >> "${staging}/pvecm-status.orig"
     fi
     if ! pvecm nodes > "${staging}/pvecm-nodes.orig" 2>&1; then
-        printf '\\n[INFO] Cluster node list command was unavailable during Baseline capture.\\n' >> "${staging}/pvecm-nodes.orig"
+        printf '\n[INFO] Cluster node list command was unavailable during Baseline capture.\n' >> "${staging}/pvecm-nodes.orig"
     fi
     if [[ ! -s "${staging}/interfaces.orig" ||
           ! -s "${staging}/pvecm-status.orig" ||
@@ -2507,8 +2507,9 @@ vss_port_group_create()
         read -r -p "VLAN ID：" vlan
         valid_vlan_id "${vlan}" || { log_error "VLAN ID 必須為 1～4094。"; continue; }
         vlan_dev="${bridge}.${vlan}"
-        if ip link show "${vlan_dev}" >/dev/null 2>&1 || grep -qE "^auto[[:space:]]+${vlan_dev}([[:space:]]|$)" /etc/network/interfaces; then
-            log_error "VLAN 子介面已存在：${vlan_dev}"
+        if ip link show "${vlan_dev}" >/dev/null 2>&1 ||
+           grep -qE "^(auto|allow-[^[:space:]]+)[[:space:]]+${vlan_dev}([[:space:]]|$)|^iface[[:space:]]+${vlan_dev}([[:space:]]|$)" /etc/network/interfaces /etc/network/interfaces.new 2>/dev/null; then
+            log_error "VLAN 子介面已存在或仍被 PVE 設定引用：${vlan_dev}"
             continue
         fi
         break
