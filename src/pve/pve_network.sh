@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.32
+# Version: 2.0.33
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.32"
+SCRIPT_VERSION="2.0.33"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3335,9 +3335,9 @@ backup_history()
         done
         echo "   0) 返回"
         echo ""
-        echo "選擇 Backup 後可直接執行 Recovery。"
+        echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
 
-        read -r -p "請選擇：" choice
+        read -r -p "請選擇 Backup 編號（0 返回）：" choice
         if [[ "${choice}" == "0" ]]; then
             return 0
         fi
@@ -3349,6 +3349,47 @@ backup_history()
 
         backup="${backups[$((choice - 1))]}"
         local change_id="${backup##*/}"
+        local action
+        echo ""
+        echo "  r) 還原此 Backup"
+        echo "  d) 刪除此 Backup"
+        echo "  0) 返回 Backup History"
+        read -r -p "請選擇操作：" action
+        case "${action}" in
+            0) continue ;;
+            d|D)
+                # 僅允許刪除 BACKUP_DIR 下符合工具 Change ID 格式的單一直接子目錄。
+                if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
+                      ! "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]+-[0-9]+$ ||
+                      ! -d "${backup}" || -L "${backup}" ||
+                      ! -s "${backup}/interfaces" ]]; then
+                    log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
+                    pause_screen
+                    continue
+                fi
+                echo ""
+                echo "即將刪除單一 Backup：${backup}"
+                echo "不會刪除 Baseline、Recovery 或其他 Backup。"
+                if confirm "確定永久刪除此 Backup？"; then
+                    if [[ "${backup}" == "${BACKUP_DIR}/${change_id}" && -d "${backup}" && ! -L "${backup}" ]]; then
+                        rm -rf -- "${backup}"
+                        if [[ ! -e "${backup}" ]]; then
+                            log_ok "Backup 已刪除：${change_id}"
+                        else
+                            log_error "Backup 刪除未完成：${change_id}"
+                        fi
+                    else
+                        log_error "刪除前路徑安全檢查未通過，拒絕刪除。"
+                    fi
+                else
+                    log_info "已取消刪除。"
+                fi
+                pause_screen
+                continue
+                ;;
+            r|R) ;;
+            *) log_error "操作無效。"; sleep 1; continue ;;
+        esac
 
         echo ""
         echo "------------------------------------------------------------"
@@ -3407,6 +3448,11 @@ backup_now()
         log_error "目前 /etc/network/interfaces 不存在或為空，取消 Backup。"
         pause_screen
         return 1
+    fi
+
+    if ! confirm "確認備份目前網路設定與 Runtime 快照？"; then
+        log_info "已取消 Backup；未建立新備份。"
+        return 0
     fi
 
     local change_id target
