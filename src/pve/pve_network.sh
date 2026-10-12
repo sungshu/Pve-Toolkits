@@ -700,7 +700,7 @@ create_baseline()
 
     log_step "建立 Network Baseline"
     echo "建立前請確認管理 IP、Gateway、SSH 與 PVE 管理介面正常。"
-    local staging="${BASE_DIR}/.baseline.tmp.$"
+    local staging="${BASE_DIR}/.baseline.tmp.${BASHPID}"
     rm -rf -- "${staging}"
     if ! mkdir -m 0700 -- "${staging}"; then
         log_error "無法建立 Baseline 暫存目錄。"
@@ -2441,37 +2441,64 @@ vss_port_group_create()
         local state_exists=0
         local runtime_exists=0
         local config_exists=0
+        local stale_bridge="" stale_vlan="" stale_vlan_dev=""
+        local stale_vlan_used=0
 
         if state_has "VSS_PORT_GROUP" "${vnet}"; then
             state_exists=1
+            stale_vlan="$(awk -F '\t' -v n="${vnet}" '$1=="VSS_PORT_GROUP" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            stale_bridge="$(awk -F '\t' -v n="${vnet}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            stale_vlan_dev="$(awk -F '\t' -v n="${vnet}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
+            [[ -n "${stale_vlan_dev}" ]] || stale_vlan_dev="${stale_bridge}.${stale_vlan}"
         fi
-        if [[ -e "/sys/class/net/${vnet}" ]]; then
-            runtime_exists=1
-        fi
+        if [[ -e "/sys/class/net/${vnet}" ]]; then runtime_exists=1; fi
         if grep -qE "^(auto|allow-[^[:space:]]+)[[:space:]]+${vnet}([[:space:]]|$)|^iface[[:space:]]+${vnet}([[:space:]]|$)" /etc/network/interfaces /etc/network/interfaces.new 2>/dev/null; then
             config_exists=1
         fi
 
-        if (( runtime_exists == 1 || config_exists == 1 )); then
-            log_error "VSS Port Group / PVE Bridge ${vnet} 已存在。"
-            continue
+        if ((state_exists == 1 && config_exists == 0)); then
+            if ((runtime_exists == 1)); then
+                log_error "State 記錄此工具管理的 Port Group，但 Runtime Bridge 仍存在：${vnet}"
+                log_error "為避免中斷仍在使用的 VM 網路，不會自動刪除 Runtime Bridge。請先確認使用狀態並清理後重試。"
+                continue
+            fi
+
+            if [[ -n "${stale_vlan_dev}" ]] &&
+               grep -qF "${stale_vlan_dev}" /etc/network/interfaces /etc/network/interfaces.new 2>/dev/null; then
+                log_error "VLAN Interface 仍被 PVE 設定引用，拒絕清理 State：${stale_vlan_dev}"
+                continue
+            fi
+
+            if [[ -n "${stale_vlan_dev}" ]] && ip link show "${stale_vlan_dev}" >/dev/null 2>&1; then
+                stale_vlan_used="$(awk -F '\t' -v d="${stale_vlan_dev}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $3==d {n++} END{print n+0}' "${STATE_FILE}")"
+                if ((stale_vlan_used > 1)); then
+                    log_error "殘留 VLAN Interface 被多個 State 物件引用，拒絕自動刪除：${stale_vlan_dev}"
+                    continue
+                fi
+                echo "偵測到 GUI 刪除後仍存在的工具管理 VLAN Runtime Interface：${stale_vlan_dev}"
+                if ! confirm "確認只清理此孤立 VLAN Interface，讓 Port Group 可以重新建立？"; then
+                    log_info "保留 Runtime Interface 與 State，取消本次建立。"
+                    continue
+                fi
+                if ! ip link delete dev "${stale_vlan_dev}" || ip link show "${stale_vlan_dev}" >/dev/null 2>&1; then
+                    log_error "無法清理殘留 VLAN Interface：${stale_vlan_dev}"
+                    continue
+                fi
+            fi
+
+            log_info "PVE 設定與 Port Group Runtime 均不存在，清理過期的工具 State：${vnet}"
+            if ! remove_state_entry "VSS_PORT_GROUP" "${vnet}" ||
+               ! remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${vnet}" ||
+               ! remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${vnet}"; then
+                log_error "過期 State 清理未完成，停止建立：${vnet}"
+                continue
+            fi
+            state_exists=0
         fi
 
-        if (( state_exists == 1 )); then
-            log_info "偵測到 VSS Port Group State 殘留，但 Runtime / 設定檔均不存在：${vnet}"
-            log_info "清除該 Port Group 的過期 State 後重新建立。"
-            remove_state_entry "VSS_PORT_GROUP" "${vnet}" || {
-                log_error "無法清除過期 State：VSS_PORT_GROUP / ${vnet}"
-                continue
-            }
-            remove_state_entry "VSS_PORT_GROUP_BRIDGE" "${vnet}" || {
-                log_error "無法清除過期 State：VSS_PORT_GROUP_BRIDGE / ${vnet}"
-                continue
-            }
-            remove_state_entry "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" || {
-                log_error "無法清除過期 State：VSS_PORT_GROUP_VLAN_DEV / ${vnet}"
-                continue
-            }
+        if ((runtime_exists == 1 || config_exists == 1)); then
+            log_error "VSS Port Group / PVE Bridge ${vnet} 已存在。"
+            continue
         fi
         break
     done
@@ -3460,22 +3487,9 @@ main_menu()
         echo ""
         echo "------------------------------------------------------------"
         echo ""
-        echo "  1) Network Objects"
-        echo "     ├─ Virtual Switch / VSS"
-        echo "     │  ├─ Physical Uplink"
-        echo "     │  ├─ Port Group"
-        echo "     │  └─ Management / Host Network"
-        echo "     └─ Distributed Virtual Switch / VDS"
-        echo "        └─ Port Group"
-        echo "  2) Backup / Recovery"
-        echo "     ├─ Baseline"
-        echo "     ├─ Backup History"
-        echo "     └─ Recovery"
-        echo "  3) Network Status"
-        echo "     ├─ Current Configuration"
-        echo "     ├─ Topology"
-        echo "     ├─ Cluster"
-        echo "     └─ Connectivity"
+        echo "  1) VSS — Standard Virtual Switch"
+        echo "  2) VDS — Distributed Virtual Switch"
+        echo "  3) Backup / Recovery"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
@@ -3484,9 +3498,9 @@ main_menu()
         local choice
         read -r -p "請選擇：" choice
         case "${choice}" in
-            1) network_objects_menu ;;
-            2) rollback_menu ;;
-            3) show_current_network ;;
+            1) vss_setup ;;
+            2) vds_setup ;;
+            3) rollback_menu ;;
             0)
                 echo "離開 PVE NETWORK PRO。"
                 return 0
