@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.34
+# Version: 2.0.35
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.34"
+SCRIPT_VERSION="2.0.35"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1008,11 +1008,20 @@ write_vss_interfaces()
 
 create_change_id()
 {
-    # Change ID 必須避免同秒內多次操作互相覆蓋 Backup。
+    # 系統變更用 Change ID；與手動 Backup 名稱明確區分。
     local timestamp suffix
     timestamp="$(date '+%Y%m%d-%H%M%S-%N')"
     suffix="${RANDOM}${RANDOM}"
     printf 'CHG-%s-%s' "${timestamp}" "${suffix}"
+}
+
+create_manual_backup_id()
+{
+    # 手動 Backup 使用獨立前綴，方便在目錄與 Backup History 直接辨識。
+    local timestamp suffix
+    timestamp="$(date '+%Y%m%d-%H%M%S-%N')"
+    suffix="${RANDOM}${RANDOM}"
+    printf 'MANUAL-%s-%s' "${timestamp}" "${suffix}"
 }
 
 create_change_backup()
@@ -3384,6 +3393,7 @@ backup_history()
         done
         echo "   0) 返回"
         echo ""
+        echo "MANUAL-* 為手動備份；CHG-* 為網路變更前自動備份。"
         echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
 
         read -r -p "請選擇 Backup 編號（0 返回）：" choice
@@ -3407,9 +3417,9 @@ backup_history()
         case "${action}" in
             0) continue ;;
             d|D)
-                # 僅允許刪除 BACKUP_DIR 下符合工具 Change ID 格式的單一直接子目錄。
+                # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
-                      ! "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]+-[0-9]+$ ||
+                      ! "${change_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]+-[0-9]+$ ||
                       ! -d "${backup}" || -L "${backup}" ||
                       ! -s "${backup}/interfaces" ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
@@ -3444,7 +3454,12 @@ backup_history()
         echo "------------------------------------------------------------"
         echo " Backup Recovery 確認"
         echo "------------------------------------------------------------"
-        echo " Change ID：${change_id}"
+        echo " Backup ID：${change_id}"
+        if [[ "${change_id}" == MANUAL-* ]]; then
+            echo " 備份類型：手動 Backup"
+        else
+            echo " 備份類型：變更前自動 Backup"
+        fi
         echo " Source   ：${backup}/interfaces"
         if [[ -s "${backup}/state" ]]; then
             echo " State    ：可用"
@@ -3505,7 +3520,7 @@ backup_now()
     fi
 
     local change_id target
-    change_id="$(create_change_id)"
+    change_id="$(create_manual_backup_id)"
     target="${BACKUP_DIR}/${change_id}"
 
     if ! create_change_backup "${change_id}"; then
@@ -3518,7 +3533,8 @@ backup_now()
     echo "------------------------------------------------------------"
     echo " Backup 驗證"
     echo "------------------------------------------------------------"
-    echo " Change ID：${change_id}"
+    echo " Backup ID：${change_id}"
+    echo " 備份類型 ：手動 Backup"
     echo " 路徑     ：${target}"
     echo ""
     local file
