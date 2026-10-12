@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.39
+# Version: 2.0.40
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.39"
+SCRIPT_VERSION="2.0.40"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1326,7 +1326,10 @@ apply_interfaces_file()
     fi
     log_step "套用網路設定：${change_id}"
     install -m 0644 "${source}" /etc/network/interfaces
-    if ! ifreload -a; then
+    # ifupdown2 的舊 Runtime State 可能引用已不存在的 Bridge（例如 vLan050/brif）。
+    # 已在本節點觀察到 ifreload -a 因舊狀態失敗，而 -a -u Dry-run 可通過；
+    # 一般 Apply 與 Recovery 統一使用目前設定重建介面狀態，避免重用過期 Runtime State。
+    if ! ifreload -a -u; then
         log_error "套用失敗，開始 Recovery：${change_id}"
         if restore_change_backup "${change_id}"; then
             log_ok "原網路設定 Recovery 完成：${change_id}"
