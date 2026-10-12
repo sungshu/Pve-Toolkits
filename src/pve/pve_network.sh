@@ -1105,7 +1105,9 @@ restore_change_backup()
     rm -f -- "${rollback_path}" "${rollback_state:-}"
     log_ok "Recovery 設定、State 與管理網路驗證完成。"
     return 0
-}network_pending_configuration_exists()
+}
+
+network_pending_configuration_exists()
 {
     [[ -f /etc/network/interfaces.new && -s /etc/network/interfaces.new ]]
 }
