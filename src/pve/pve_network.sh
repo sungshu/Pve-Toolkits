@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.40
+# Version: 2.0.42
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.41"
+SCRIPT_VERSION="2.0.42"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -22,6 +22,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 SCRIPT_NAME="pve_network.sh"
@@ -1913,52 +1915,53 @@ vss_show()
     echo "============================================================"
     echo ""
 
-    echo "Virtual Switch / VSS："
+    echo -e "${CYAN}Virtual Switch / VSS：${NC}"
     echo ""
 
     local bridge uplink
     while read -r bridge; do
         [[ -n "${bridge}" ]] || continue
-        echo "  Virtual Switch：$(get_vswitch_name "${bridge}")"
-        echo "  PVE Bridge     ：${bridge}"
-        echo "  Physical Uplink："
+        echo -e "  ${CYAN}Virtual Switch：${NC}${GREEN}$(get_vswitch_name "${bridge}")${NC}"
+        echo -e "  ${CYAN}PVE Bridge     ：${NC}${GREEN}${bridge}${NC}"
+        echo -e "  ${CYAN}Physical Uplink：${NC}"
 
         local -a ports=()
         if [[ -d "/sys/class/net/${bridge}/brif" ]]; then
             while read -r uplink; do
                 [[ -n "${uplink}" ]] || continue
                 ports+=("${uplink}")
-            done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\n" 2>/dev/null | sort -V)
+            done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\\n" 2>/dev/null | sort -V)
         fi
 
-        if ((${#ports[@]} == 0)); then
-            echo "    狀態：尚未設定 Physical Uplink"
+        if (("${#ports[@]}" == 0)); then
+            echo -e "    狀態：${YELLOW}尚未設定 Physical Uplink${NC}"
         else
             for uplink in "${ports[@]}"; do
                 if [[ -f "/proc/net/bonding/${uplink}" ]]; then
-                    echo "    ${bridge} → ${uplink}"
-                    echo "    模式：Bond"
-                    grep -E "Bonding Mode|MII Status|Currently Active Slave|Slave Interface" "/proc/net/bonding/${uplink}" | sed "s/^/      /" || true
+                    echo -e "    ${BLUE}${bridge} → ${uplink}${NC}"
+                    echo -e "    模式：${MAGENTA}Bond / NIC Teaming${NC}"
+                    grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "/proc/net/bonding/${uplink}" | while IFS= read -r detail; do
+                        echo -e "      ${BLUE}${detail}${NC}"
+                    done || true
                 else
-                    echo "    ${bridge} → ${uplink}"
-                    echo "    模式：單 NIC，未使用 Bond"
+                    echo -e "    ${BLUE}${bridge} → ${uplink}${NC}"
+                    echo -e "    模式：${GREEN}單 NIC，未使用 Bond${NC}"
                 fi
             done
         fi
         echo ""
     done < <(get_linux_bridges)
 
-    echo "Port Group："
+    echo -e "${CYAN}Port Group：${NC}"
     port_group_list_vss
     echo ""
-    echo "Management / Host Network："
+    echo -e "${CYAN}Management / Host Network：${NC}"
     get_management_info
-    echo "  Device ：${DEV_WITH_GW:-未偵測}"
-    echo "  IP     ：${CURRENT_IP:-未偵測}"
-    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    echo -e "  Device ：${GREEN}${DEV_WITH_GW:-未偵測}${NC}"
+    echo -e "  IP     ：${GREEN}${CURRENT_IP:-未偵測}${NC}"
+    echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}"
     pause_screen
 }
-
 
 vss_vmkernel_menu()
 {
@@ -3064,55 +3067,61 @@ vss_port_group_menu()
 show_current_network()
 {
     show_header
-    echo "============================================================"
-    echo " 目前網路設定"
-    echo "============================================================"
+    echo -e "${CYAN}============================================================${NC}"
+    echo -e "${CYAN} 目前網路設定 / Network Topology${NC}"
+    echo -e "${CYAN}============================================================${NC}"
     echo ""
 
     get_management_info
-    echo "管理連線："
-    echo "  Device ：${DEV_WITH_GW:-未偵測}"
-    echo "  IP     ：${CURRENT_IP:-未偵測}"
-    echo "  Gateway：${CURRENT_GW:-未偵測}"
-    echo ""
+    echo -e "${CYAN}管理連線：${NC}"
+    echo -e "  Device ：${GREEN}${DEV_WITH_GW:-未偵測}${NC}"
+    echo -e "  IP     ：${GREEN}${CURRENT_IP:-未偵測}${NC}"
+    echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}"
 
-    echo "------------------------------------------------------------"
-    echo " 實體 NIC"
-    echo "------------------------------------------------------------"
-    while read -r nic; do        [[ -n "${nic}" ]] || continue
-        printf "  %-12s %-12s %s\n" "${nic}" "$(get_link_speed "${nic}")" "$(get_link_state "${nic}")"
+    echo ""
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    echo -e "${CYAN} 實體 NIC${NC}"
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    while read -r nic; do
+        [[ -n "${nic}" ]] || continue
+        local nic_state
+        nic_state="$(get_link_state "${nic}")"
+        if [[ "${nic_state}" == "up" ]]; then
+            printf "  ${BLUE}%-12s${NC} %-12s ${GREEN}%s${NC}\\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
+        else
+            printf "  ${BLUE}%-12s${NC} %-12s ${YELLOW}%s${NC}\\n" "${nic}" "$(get_link_speed "${nic}")" "${nic_state}"
+        fi
     done < <(get_physical_nics)
 
     echo ""
-    echo "------------------------------------------------------------"
-    echo " Linux Bridge / vSwitch"
-    echo "------------------------------------------------------------"
-    ip -br link show type bridge 2>/dev/null || true
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    echo -e "${CYAN} Linux Bridge / vSwitch${NC}"
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    ip -br link show type bridge 2>/dev/null | while IFS= read -r line; do echo -e "${GREEN}${line}${NC}"; done || true
     echo ""
     ip -br addr show || true
 
     echo ""
-    echo "------------------------------------------------------------"
-    echo " Bond"
-    echo "------------------------------------------------------------"
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    echo -e "${CYAN} Bond / NIC Teaming${NC}"
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
     if ls /proc/net/bonding/* >/dev/null 2>&1; then
         for file in /proc/net/bonding/*; do
             [[ -f "${file}" ]] || continue
-            echo "[$(basename "${file}")]"
-            grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${file}" || true
+            echo -e "${MAGENTA}[$(basename "${file}")]${NC}"
+            grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "${file}" | while IFS= read -r line; do echo -e "  ${BLUE}${line}${NC}"; done || true
             echo ""
         done
     else
-        echo "目前沒有 Bond。"
+        echo -e "${YELLOW}目前沒有 Bond。${NC}"
     fi
 
-    echo "------------------------------------------------------------"
-    echo " SDN / VDS"
-    echo "------------------------------------------------------------"
-    pvesh get /cluster/sdn/zones 2>/dev/null || true
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    echo -e "${CYAN} SDN / VDS${NC}"
+    echo -e "${CYAN}------------------------------------------------------------${NC}"
+    pvesh get /cluster/sdn/zones 2>/dev/null | while IFS= read -r line; do echo -e "${MAGENTA}${line}${NC}"; done || true
     echo ""
-    pvesh get /cluster/sdn/vnets 2>/dev/null || true
-    echo ""
+    pvesh get /cluster/sdn/vnets 2>/dev/null | while IFS= read -r line; do echo -e "${BLUE}${line}${NC}"; done || true
 
     pause_screen
 }
@@ -3423,7 +3432,14 @@ backup_history()
 
         i=1
         for backup in "${backups[@]}"; do
-            printf "  %2d) %s\n" "${i}" "${backup}"
+            local backup_id="${backup##*/}"
+            case "${backup_id}" in
+                CHG-vss-*) printf "  %2d) ${CYAN}%s${NC}  ${BLUE}[VSS 自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
+                CHG-vds-*) printf "  %2d) ${CYAN}%s${NC}  ${MAGENTA}[VDS 自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
+                CHG-*)     printf "  %2d) ${CYAN}%s${NC}  ${YELLOW}[網路變更自動備份]${NC}\\n" "${i}" "${backup_id}" ;;
+                MANUAL-*)  printf "  %2d) ${GREEN}%s${NC}  [手動備份]\\n" "${i}" "${backup_id}" ;;
+                *)         printf "  %2d) %s\\n" "${i}" "${backup_id}" ;;
+            esac
             i=$((i + 1))
         done
         echo "   A) 全部刪除 CHG-* 自動 Backup"
