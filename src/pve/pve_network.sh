@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Version: 2.0.38
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.38"
+SCRIPT_VERSION="2.0.39"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3419,14 +3419,68 @@ backup_history()
             printf "  %2d) %s\n" "${i}" "${backup}"
             i=$((i + 1))
         done
+        echo "   A) 全部刪除 Backup"
         echo "   0) 返回"
         echo ""
         echo "MANUAL-* 為手動備份；CHG-* 為網路變更前自動備份。"
         echo "選擇 Backup 後可執行 Recovery 或刪除該筆 Backup。"
+        echo "全部刪除只處理符合安全條件的 Backup，不會刪除 Baseline 或 Recovery。"
 
-        read -r -p "請選擇 Backup 編號（0 返回）：" choice
+        read -r -p "請選擇 Backup 編號（A 全部刪除，0 返回）：" choice
         if [[ "${choice}" == "0" ]]; then
             return 0
+        fi
+        if [[ "${choice}" =~ ^[aA]$ ]]; then
+            local invalid_backup="" candidate candidate_id
+            for candidate in "${backups[@]}"; do
+                candidate_id="${candidate##*/}"
+                if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ||
+                      ! "${candidate_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
+                      ! -d "${candidate}" || -L "${candidate}" ||
+                      ! -s "${candidate}/interfaces" ]]; then
+                    invalid_backup="${candidate}"
+                    break
+                fi
+            done
+            if [[ -n "${invalid_backup}" ]]; then
+                log_error "發現不符合安全條件的 Backup：${invalid_backup}"
+                log_error "為避免部分刪除，已取消全部刪除；未刪除任何 Backup。"
+                pause_screen
+                continue
+            fi
+            echo ""
+            echo "即將永久刪除全部 ${#backups[@]} 個 Backup："
+            printf '  - %s\n' "${backups[@]##*/}"
+            echo "僅刪除 ${BACKUP_DIR} 下通過安全檢查的 Backup。"
+            echo "不會刪除 Baseline、Recovery 或其他目錄。"
+            if confirm "確定永久刪除全部 ${#backups[@]} 個 Backup？"; then
+                local delete_failed=0
+                for candidate in "${backups[@]}"; do
+                    candidate_id="${candidate##*/}"
+                    if [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" &&
+                          -d "${candidate}" && ! -L "${candidate}" &&
+                          -s "${candidate}/interfaces" ]]; then
+                        if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
+                            log_ok "已刪除：${candidate_id}"
+                        else
+                            log_error "刪除失敗：${candidate_id}"
+                            delete_failed=1
+                        fi
+                    else
+                        log_error "刪除前安全檢查未通過：${candidate_id}"
+                        delete_failed=1
+                    fi
+                done
+                if ((delete_failed == 0)); then
+                    log_ok "全部 ${#backups[@]} 個 Backup 已刪除。"
+                else
+                    log_error "全部刪除未完整完成，請檢查上方結果；不會自動重試。"
+                fi
+            else
+                log_info "已取消全部刪除。"
+            fi
+            pause_screen
+            continue
         fi
         if ! [[ "${choice}" =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#backups[@]})); then
             log_error "選擇無效。"
