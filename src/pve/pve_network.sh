@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.37
+# Version: 2.0.38
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.37"
+SCRIPT_VERSION="2.0.38"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3447,7 +3447,7 @@ backup_history()
             d|D)
                 # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
-                      ! "${change_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]+-[0-9]+$ ||
+                      ! "${change_id}" =~ ^(CHG|MANUAL)-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ||
                       ! -d "${backup}" || -L "${backup}" ||
                       ! -s "${backup}/interfaces" ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
