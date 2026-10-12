@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.33
+# Version: 2.0.34
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.33"
+SCRIPT_VERSION="2.0.34"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1144,10 +1144,41 @@ restore_change_backup()
         return 1
     fi
     if ! ifreload -a; then
-        log_error "Recovery Apply 失敗，嘗試還原 Recovery 前設定。"
-        cp -a "${rollback_path}" /etc/network/interfaces
-        if ((had_state)); then cp -a "${rollback_state}" "${STATE_FILE}"; else rm -f -- "${STATE_FILE}"; fi
-        if ifreload -a; then log_ok "Recovery 失敗後，已重新套用 Recovery 前設定。"; else log_error "Recovery 前設定已寫回，但 ifreload 仍失敗；需人工檢查 Runtime 網路。"; fi
+        local failure_stamp
+        failure_stamp="$(date '+%Y%m%d-%H%M%S-%N')"
+        log_error "Recovery Apply 失敗；保留失敗目標與 Recovery 前快照，停止自動重試 ifreload。"
+
+        # 保留本次嘗試套用的設定及 Recovery 前快照，供後續人工比對。
+        if ! cp -a /etc/network/interfaces "${recovery_path}/interfaces.failed-target.${failure_stamp}"; then
+            log_error "無法保存 Recovery 失敗目標設定：${recovery_path}"
+        fi
+        if ! cp -a "${rollback_path}" "${recovery_path}/interfaces.before-recovery.${failure_stamp}"; then
+            log_error "無法保存 Recovery 前設定快照：${rollback_path}"
+        fi
+        if ((had_state)); then
+            if ! cp -a "${rollback_state}" "${recovery_path}/state.before-recovery.${failure_stamp}"; then
+                log_error "無法保存 Recovery 前 State 快照：${rollback_state}"
+            fi
+        fi
+
+        # 先將磁碟上的設定與 State 寫回 Recovery 前版本，但不再盲目重試
+        # ifreload -a；相同的系統層錯誤可能再次發生，且可能改動 Runtime。
+        if ! cp -a "${rollback_path}" /etc/network/interfaces; then
+            log_error "嚴重：Recovery 前 interfaces 寫回失敗；快照仍保留於 ${rollback_path}"
+        fi
+        if ((had_state)); then
+            if ! cp -a "${rollback_state}" "${STATE_FILE}"; then
+                log_error "嚴重：Recovery 前 State 寫回失敗；快照仍保留於 ${rollback_state}"
+            fi
+        else
+            if ! rm -f -- "${STATE_FILE}"; then
+                log_error "無法移除 Recovery 期間產生的 State：${STATE_FILE}"
+            fi
+        fi
+
+        log_error "Recovery 未成功；磁碟設定已嘗試還原為 Recovery 前版本，但 Runtime 未重新套用或驗證。"
+        log_error "Recovery 診斷檔案位置：${recovery_path}"
+        log_error "請勿將本次結果視為網路已恢復。"
         rm -f -- "${rollback_path}" "${rollback_state:-}"
         return 1
     fi
