@@ -1141,10 +1141,14 @@ validate_change_backup()
         log_error "Backup 缺少 SDN 設定存在性標記。"
         return 1
     fi
-    ( cd "${backup_dir}" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || {
-        log_error "Backup SHA256 完整性驗證失敗：${backup_dir}"
-        return 1
-    }
+    # 2.0.45 之前建立的歷史 Backup 沒有 SHA256SUMS，仍以必要檔案結構驗證；
+    # 新版 Backup 必須通過 SHA256 驗證，不能把舊格式誤判成新版完整性驗證已通過。
+    if [[ -f "${backup_dir}/SHA256SUMS" ]]; then
+        ( cd "${backup_dir}" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || {
+            log_error "Backup SHA256 完整性驗證失敗：${backup_dir}"
+            return 1
+        }
+    fi
     return 0
 }
 
