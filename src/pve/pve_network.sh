@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.36
+# Version: 2.0.37
 # Updated: 2026-10-12
 
-SCRIPT_VERSION="2.0.36"
+SCRIPT_VERSION="2.0.37"
 UPDATED="2026-10-12"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1169,7 +1169,10 @@ restore_change_backup()
         return 1
     fi
 
-    if ! ifreload -a; then
+    # Recovery 使用已安裝的目標設定作為唯一依據，不沿用 ifupdown2 儲存的舊介面狀態。
+    # 已確認一般 Dry-run 會從舊狀態引用不存在的 vLan050/brif 並失敗；-u Dry-run
+    # 則只解析目前設定。這裡只更改 Recovery 路徑，不改一般 Apply 的行為。
+    if ! ifreload -a -u; then
         local failure_stamp
         failure_stamp="$(date '+%Y%m%d-%H%M%S-%N')"
         log_error "Recovery Apply 失敗；保留失敗目標與 Recovery 前快照，停止自動重試 ifreload。"
