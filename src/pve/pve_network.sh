@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.80
+# Version: 2.0.81
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.80"
+SCRIPT_VERSION="2.0.81"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -4194,8 +4194,7 @@ rollback_menu()
         echo ""
         echo "  1) Backup 建立手動備份"
         echo "  2) Recovery 從既有備份還原網路設定"
-        echo "  3) VDS 刪除本工具建立的 SDN Zone / VNet"
-        echo "  4) Baseline 還原最初設定"
+        echo "  3) Baseline 還原最初設定"
         echo "  0) 返回"
         echo ""
 
@@ -4204,8 +4203,7 @@ rollback_menu()
         case "${choice}" in
             1) backup_now ;;
             2) backup_history ;;
-            3) rollback_vds ;;
-            4) rollback_baseline ;;
+            3) rollback_baseline ;;
             0) return 0 ;;
             *) log_error "選擇無效。"; sleep 1 ;;
         esac
