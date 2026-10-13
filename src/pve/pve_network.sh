@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.74
+# Version: 2.0.75
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.74"
+SCRIPT_VERSION="2.0.75"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1008,7 +1008,7 @@ write_vss_interfaces()
 
             if (is_bond_auto_only) {
                 # auto bond stanza 會在 iface stanza 中重建，確保 PVE 將 Bond 識別為 bridge port。
-                n=split($0,a,"\\n")
+                n=split($0,a,"\n")
                 out=""
                 for(i=1;i<=n;i++) {
                     if(a[i] ~ /^[[:space:]]*auto[[:space:]]+/) {
@@ -1024,7 +1024,7 @@ write_vss_interfaces()
                     }
                     if(a[i] ~ /^[[:space:]]*(bond-slaves|bond-miimon|bond-mode|bond-primary|bond-xmit-hash-policy|bond-lacp-rate)[[:space:]]+/)
                         continue
-                    out=out (out=="" ? "" : "\\n") a[i]
+                    out=out (out=="" ? "" : "\n") a[i]
                 }
                 if(out!="")
                     print out
