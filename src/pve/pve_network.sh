@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.57
+# Version: 2.0.58
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.57"
+SCRIPT_VERSION="2.0.58"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -14,6 +14,7 @@ NETWORK_SCRIPT_PATH="/root/pve_network.sh"
 GENERATED_INTERFACES_FILE=""
 NETWORK_UPDATE_GUARD="${PVE_NETWORK_UPDATED:-0}"
 BOND_MODE=""
+BOND_DEVICE=""
 BOND_PRIMARY_NIC=""
 BOND_XMIT_HASH_POLICY=""
 BOND_LACP_RATE=""
@@ -341,14 +342,14 @@ show_nics()
 nic_used_elsewhere()
 {
     local nic="${1}" target_bridge="${2}" target_bond=""
-    target_bond="$(awk -v bridge="${target_bridge}" 'BEGIN{RS=""} $0~"(^|\\n)auto[[:space:]]+" bridge "[[:space:]]*(\\n|$)"{n=split($0,a,"\\n");for(i=1;i<=n;i++)if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+bond[0-9]+/){sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i]);print a[i];exit}}' /etc/network/interfaces 2>/dev/null || true)"
+    target_bond="$(awk -v bridge="${target_bridge}" 'BEGIN{RS=""} $0~"(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)"{n=split($0,a,"\n");for(i=1;i<=n;i++)if(a[i]~/^[[:space:]]*bridge-ports[[:space:]]+bond[0-9]+/){sub(/^[[:space:]]*bridge-ports[[:space:]]+/,"",a[i]);print a[i];exit}}' /etc/network/interfaces 2>/dev/null || true)"
     awk -v nic="${nic}" -v target="${target_bridge}" -v target_bond="${target_bond}" 'BEGIN{RS=""}{
-        is_target=($0~"(^|\\n)auto[[:space:]]+" target "[[:space:]]*(\\n|$)")
-        is_target_bond=(target_bond!="" && $0~"(^|\\n)auto[[:space:]]+" target_bond "[[:space:]]*(\\n|$)")
+        is_target=($0~"(^|\n)auto[[:space:]]+" target "[[:space:]]*(\n|$)")
+        is_target_bond=(target_bond!="" && $0~"(^|\n)auto[[:space:]]+" target_bond "[[:space:]]*(\n|$)")
         if(is_target||is_target_bond)next
-        if($0~"(^|\\n)bridge-ports[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
-        if($0~"(^|\\n)bond-slaves[[:space:]]+[^\\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
-        if($0~"(^|\\n)iface[[:space:]]+" nic "[[:space:]]+inet[[:space:]]+(static|dhcp)")found=1
+        if($0~"(^|\n)bridge-ports[[:space:]]+[^\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
+        if($0~"(^|\n)bond-slaves[[:space:]]+[^\n]*([[:space:]]|^)" nic "([[:space:]]|$)")found=1
+        if($0~"(^|\n)iface[[:space:]]+" nic "[[:space:]]+inet[[:space:]]+(static|dhcp)")found=1
     }END{exit(found?0:1)}' /etc/network/interfaces 2>/dev/null
 }
 select_nic()
@@ -851,11 +852,57 @@ write_vss_interfaces()
             bond_name="${old_bond_name}"
         else
             local n=0
-            while grep -qE "^auto bond${n}([[:space:]]|$)" "${generated_file}" 2>/dev/null; do
+            while true; do
+                local candidate="bond${n}"
+                local candidate_defined candidate_in_use candidate_has_slaves
+                candidate_defined="$(awk -v b="${candidate}" '
+                    BEGIN { RS="" }
+                    $0 ~ ("(^|\n)iface[[:space:]]+" b "[[:space:]]") ||
+                    $0 ~ ("(^|\n)(auto|allow-[^[:space:]]+)[[:space:]]+" b "([[:space:]]|$)") { found=1 }
+                    END { print found+0 }
+                ' "${generated_file}")"
+                candidate_in_use="$(awk -v b="${candidate}" '
+                    BEGIN { RS="" }
+                    {
+                        n=split($0, lines, "\n")
+                        for (i=1; i<=n; i++) {
+                            if (lines[i] ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
+                                sub(/^[[:space:]]*bridge-ports[[:space:]]+/, "", lines[i])
+                                m=split(lines[i], ports, /[[:space:]]+/)
+                                for (j=1; j<=m; j++) {
+                                    if (ports[j]==b || index(ports[j], b ".")==1) found=1
+                                }
+                            }
+                        }
+                    }
+                    END { print found+0 }
+                ' "${generated_file}")"
+                candidate_has_slaves="$(awk -v b="${candidate}" '
+                    BEGIN { RS="" }
+                    $0 ~ ("(^|\n)iface[[:space:]]+" b "[[:space:]]") {
+                        n=split($0, lines, "\n")
+                        for (i=1; i<=n; i++) {
+                            if (lines[i] ~ /^[[:space:]]*bond-slaves[[:space:]]+/) {
+                                sub(/^[[:space:]]*bond-slaves[[:space:]]+/, "", lines[i])
+                                if (lines[i] != "" && lines[i] != "none") found=1
+                            }
+                        }
+                    }
+                    END { print found+0 }
+                ' "${generated_file}")"
+                # 重用未被 Bridge 引用、且沒有既有 Slave 的空 Bond，避免重複空白 Bond。
+                if ((candidate_in_use == 0)) && { ((candidate_defined == 0)) || ((candidate_has_slaves == 0)); }; then
+                    bond_name="${candidate}"
+                    break
+                fi
                 n=$((n + 1))
+                if ((n > 127)); then
+                    log_error "找不到可安全使用的 Linux Bond 名稱。"
+                    return 1
+                fi
             done
-            bond_name="bond${n}"
         fi
+        BOND_DEVICE="${bond_name}"
         bridge_port="${bond_name}"
     else
         # Single NIC 模式：若原 VSS 使用 Bond，移除舊 Bond，避免留下孤立 bond0。
@@ -883,8 +930,14 @@ write_vss_interfaces()
 
         {
             is_bridge = ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
-            is_bond = ((bond != "" && $0 ~ "(^|\n)auto[[:space:]]+" bond "[[:space:]]*(\n|$)") ||
-                       (old_bond != "" && old_bond != bond && $0 ~ "(^|\n)auto[[:space:]]+" old_bond "[[:space:]]*(\n|$)"))
+            # Bond options belong to iface, not an auto-only paragraph.
+            is_bond = (bond != "" && $0 ~ ("(^|\n)iface[[:space:]]+" bond "[[:space:]]"))
+            is_bond_auto_only = (bond != "" &&
+                                 $0 ~ ("(^|\n)(auto|allow-[^[:space:]]+)[[:space:]]+" bond "([[:space:]]|$)") &&
+                                 $0 !~ ("(^|\n)iface[[:space:]]+" bond "[[:space:]]"))
+            is_old_bond = (old_bond != "" && old_bond != bond &&
+                           ($0 ~ ("(^|\n)iface[[:space:]]+" old_bond "[[:space:]]") ||
+                            $0 ~ ("(^|\n)(auto|allow-[^[:space:]]+)[[:space:]]+" old_bond "([[:space:]]|$)")))
 
             if (is_bridge) {
                 bridge_found=1
@@ -929,6 +982,23 @@ write_vss_interfaces()
                 if(!have_vlan_aware) out=out "\n    bridge-vlan-aware yes"
                 if(!have_vlan_vids) out=out "\n    bridge-vids 2-4094"
 
+                print out
+                next
+            }
+
+            if (is_old_bond)
+                next
+
+            if (is_bond_auto_only) {
+                # 舊版可能把 Bond options 寫在 auto-only paragraph；清除錯位欄位，
+                # 讓下一個 iface stanza 成為 Bond 設定的唯一來源。
+                n=split($0,a,"\n")
+                out=""
+                for(i=1;i<=n;i++) {
+                    if(a[i] ~ /^[[:space:]]*(bond-slaves|bond-miimon|bond-mode|bond-primary|bond-xmit-hash-policy|bond-lacp-rate)[[:space:]]+/)
+                        continue
+                    out=out (out=="" ? "" : "\n") a[i]
+                }
                 print out
                 next
             }
@@ -1718,6 +1788,40 @@ validate_network_after_change()
     return 0
 }
 
+validate_vss_bond_runtime()
+{
+    local bridge="$1" bond="$2" nic1="$3" nic2="$4" expected_mode="$5"
+    local bonding_dir="/sys/class/net/${bond}/bonding"
+    local actual_mode=""
+    local -a actual_slaves=()
+
+    if [[ ! -d "${bonding_dir}" ]]; then
+        log_error "Bond Runtime 不存在或尚未啟用：${bond}"
+        return 1
+    fi
+    if [[ ! -e "/sys/class/net/${bridge}/brif/${bond}" ]]; then
+        log_error "Bridge ${bridge} 未將 ${bond} 設為 Uplink。"
+        return 1
+    fi
+
+    actual_mode="$(awk '{print $1}' "${bonding_dir}/mode" 2>/dev/null || true)"
+    if [[ "${actual_mode}" != "${expected_mode}" ]]; then
+        log_error "Bond 模式不符：預期 ${expected_mode}，實際 ${actual_mode:-未讀取}"
+        return 1
+    fi
+
+    read -r -a actual_slaves < "${bonding_dir}/slaves" || true
+    if [[ "${actual_slaves[*]}" != "${nic1} ${nic2}" &&
+          "${actual_slaves[*]}" != "${nic2} ${nic1}" ]]; then
+        log_error "Bond 成員不符：預期 ${nic1} ${nic2}，實際 ${actual_slaves[*]:-無}"
+        return 1
+    fi
+
+    log_ok "Bond Runtime 驗證完成：${bond} / ${expected_mode} / ${actual_slaves[*]}"
+    return 0
+}
+
+
 ensure_bridge_vlan_aware()
 {
     local bridge="$1"
@@ -2063,6 +2167,22 @@ vss_uplink_add()
         pause_screen
         return 1
     fi
+
+    if [[ -n "${BOND_MODE}" ]] &&
+       ! validate_vss_bond_runtime "${bridge}" "${BOND_DEVICE}" "${first_nic}" "${second_nic}" "${BOND_MODE}"; then
+        log_error "VSS Bond 實際狀態驗證失敗，開始 Recovery。"
+        local bond_recovery_id
+        bond_recovery_id="$(create_change_id "recovery-bond-${bridge}")"
+        if apply_interfaces_file "${bond_recovery_id}" "${VSS_DIR}/interfaces.before-uplink"; then
+            log_ok "Bond 驗證失敗，已依變更前設定完成 Recovery。"
+        else
+            log_error "Bond 驗證失敗且自動 Recovery 未完成；請檢查網路狀態。"
+        fi
+        echo "變更前設定保存於：${VSS_DIR}/interfaces.before-uplink"
+        pause_screen
+        return 1
+    fi
+
 
     if ! save_state "VSS" "bridge" "${bridge}" ||
          ! save_state "VSS" "nic1" "${first_nic}" ||
