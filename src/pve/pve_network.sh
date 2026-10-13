@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.75
+# Version: 2.0.76
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.75"
+SCRIPT_VERSION="2.0.76"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1090,7 +1090,7 @@ write_vss_interfaces()
                     if(line!="") out=out (out=="" ? "" : "\n") line
                 }
 
-                if(!have_auto) out="auto " bond "\\n" out
+                if(!have_auto) out="auto " bond "\n" out
                 if(!have_slaves) out=out "\n    bond-slaves " nic1 " " nic2
                 if(!have_miimon) out=out "\n    bond-miimon 100"
                 if(!have_mode) out=out "\n    bond-mode " bond_mode
