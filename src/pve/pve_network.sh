@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.84
+# Version: 2.0.85
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.84"
+SCRIPT_VERSION="2.0.85"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1708,10 +1708,12 @@ apply_interfaces_file()
 
     while IFS= read -r line; do
         [[ -n "${line}" ]] || continue
-        if [[ "${line}" =~ ^warning:[[:space:]]([A-Za-z0-9_.:-]+):[[:space:]]interface[[:space:]]not[[:space:]]recognized[[:space:]]-[[:space:]]please[[:space:]]check[[:space:]]interface[[:space:]]configuration$ ]] &&
-           is_expected_new_iface_preflight_warning "${BASH_REMATCH[1]}" "${source}" "${previous_interfaces}"; then
-            ignored_new_ifaces+=("${BASH_REMATCH[1]}")
-            continue
+        if [[ "${line}" =~ ^warning:[[:space:]]([A-Za-z0-9_.:-]+):[[:space:]]interface[[:space:]]not[[:space:]]recognized[[:space:]]-[[:space:]]please[[:space:]]check[[:space:]]interface[[:space:]]configuration$ ]]; then
+            local warning_iface="${BASH_REMATCH[1]}"
+            if is_expected_new_iface_preflight_warning "${warning_iface}" "${source}" "${previous_interfaces}"; then
+                ignored_new_ifaces+=("${warning_iface}")
+                continue
+            fi
         fi
         case "${line}" in
             warning:*'bridge-fd: value of out range "0": valid attribute range: 2-255')
