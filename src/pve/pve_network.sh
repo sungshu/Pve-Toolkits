@@ -3251,7 +3251,13 @@ show_current_network()
     echo -e "${CYAN}------------------------------------------------------------${NC}"
     echo -e "${CYAN} Linux Bridge / vSwitch${NC}"
     echo -e "${CYAN}------------------------------------------------------------${NC}"
-    ip -br link show type bridge 2>/dev/null | while IFS= read -r line; do echo -e "${GREEN}${line}${NC}"; done || true
+    ip -br link show type bridge 2>/dev/null | while IFS= read -r line; do
+        case "${line}" in
+            *UP*)   echo -e "${GREEN}${line}${NC}" ;;
+            *DOWN*) echo -e "${YELLOW}${line}${NC}" ;;
+            *)      echo -e "${BLUE}${line}${NC}" ;;
+        esac
+    done || true
     echo ""
     ip -br addr show 2>/dev/null | while IFS= read -r line; do
         case "${line}" in
