@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.48
+# Version: 2.0.49
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.48"
+SCRIPT_VERSION="2.0.49"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1476,7 +1476,22 @@ apply_interfaces_file()
         return 1
     fi
     log_step "套用網路設定：${change_id}"
-    install -m 0644 "${source}" /etc/network/interfaces
+    if ! install -m 0644 "${source}" /etc/network/interfaces; then
+        log_error "無法寫入待套用的網路設定，嘗試還原原始設定：${change_id}"
+        if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
+            log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
+        fi
+        return 1
+    fi
+    # ifquery --list 只能確認介面清單可讀；用 ifreload parser 檢查 bond/bridge
+    # 等完整設定關係。檢查失敗時還原檔案，不執行 Runtime 網路變更。
+    if ! ifreload -a -s; then
+        log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
+        if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
+            log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
+        fi
+        return 1
+    fi
     # ifupdown2 的舊 Runtime State 可能引用已不存在的 Bridge（例如 vLan050/brif）。
     # 已在本節點觀察到 ifreload -a 因舊狀態失敗，而 -a -u Dry-run 可通過；
     # 一般 Apply 與 Recovery 統一使用目前設定重建介面狀態，避免重用過期 Runtime State。
