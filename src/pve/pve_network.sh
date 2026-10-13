@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.50
+# Version: 2.0.51
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.50"
+SCRIPT_VERSION="2.0.51"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3919,19 +3919,19 @@ rollback_menu()
         echo " Backup / Recovery"
         echo "============================================================"
         echo ""
-        echo "  1) Backup Now - 備份目前網路狀態"
-        echo "  2) Backup History - 備份歷史"
-        echo "  3) VSS - 還原 VSS 變更前設定"
-        echo "  4) VDS - 還原本工具建立的 SDN 物件"
-        echo "  5) Baseline - 還原最初網路設定"
+        echo "  1) 備份歷史與還原（查看／還原／刪除既有 Backup）"
+        echo "  2) 立即建立手動 Backup"
+        echo "  3) VSS 專用還原"
+        echo "  4) VDS 專用還原"
+        echo "  5) Baseline 最初設定還原"
         echo "  0) 返回"
         echo ""
 
         local choice
-        read -r -p "請選擇：" choice
+        read -r -p "請選擇（1 備份歷史與還原，2 建立手動備份）：" choice
         case "${choice}" in
-            1) backup_now ;;
-            2) backup_history ;;
+            1) backup_history ;;
+            2) backup_now ;;
             3) rollback_vss ;;
             4) rollback_vds ;;
             5) rollback_baseline ;;
@@ -3982,7 +3982,7 @@ main_menu()
         echo ""
         echo "  1) VSS — Standard Virtual Switch"
         echo "  2) VDS — Distributed Virtual Switch"
-        echo "  3) Backup / Recovery"
+        echo "  3) 備份與還原管理（含歷史備份還原）"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
