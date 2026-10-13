@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.70
+# Version: 2.0.71
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.70"
+SCRIPT_VERSION="2.0.71"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2259,7 +2259,7 @@ vss_show()
     echo -e "${CYAN}Management / Host Network${NC}"
     echo "  Device ：${DEV_WITH_GW:-未偵測}"
     echo -e "  IP     ：${GREEN}${CURRENT_IP:-未偵測}${NC}"
-    echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}
+    echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}"
     pause_screen
 }
 vss_vmkernel_menu()
