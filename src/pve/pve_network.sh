@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.82
+# Version: 2.0.83
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.82"
+SCRIPT_VERSION="2.0.83"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -33,6 +33,7 @@ BASELINE_DIR="${BASE_DIR}/baseline"
 STATE_DIR="${BASE_DIR}/state"
 VSS_DIR="${STATE_DIR}/vss"
 VDS_DIR="${STATE_DIR}/vds"
+VSS_STALE_STATE=0
 STATE_FILE="${STATE_DIR}/objects.conf"
 BACKUP_DIR="${BASE_DIR}/backup"
 RECOVERY_DIR="${BASE_DIR}/recovery"
@@ -2354,6 +2355,10 @@ vss_show()
     echo "  Device ：${DEV_WITH_GW:-未偵測}"
     echo -e "  IP     ：${GREEN}${CURRENT_IP:-未偵測}${NC}"
     echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}"
+    if ((VSS_STALE_STATE == 1)); then
+        echo ""
+        echo -e "${YELLOW}注意：State 中有已不在 /etc/network/interfaces 的舊項目；目前顯示以設定檔為準。${NC}"
+    fi
     pause_screen
 }
 vss_vmkernel_menu()
@@ -2807,7 +2812,8 @@ port_group_list_vss()
     echo -e "${CYAN} Port Group${NC}"
     echo "============================================================"
 
-    local found=0 stale=0 name vlan bridge vlan_dev
+    local found=0 name vlan bridge vlan_dev
+    VSS_STALE_STATE=0
     if [[ -f "${STATE_FILE}" ]]; then
         while IFS=$'\t' read -r name vlan; do
             [[ -n "${name}" ]] || continue
@@ -2818,7 +2824,7 @@ port_group_list_vss()
             # GUI 外部刪除後，工具 State 可能尚未同步；只列出 interfaces
             # 仍存在的 Port Group，避免把歷史 State 誤報成目前設定。
             if ! grep -Eq "^(auto|allow-[^[:space:]]+)[[:space:]]+${name}([[:space:]]|$)|^iface[[:space:]]+${name}([[:space:]]|$)" /etc/network/interfaces; then
-                stale=1
+                VSS_STALE_STATE=1
                 continue
             fi
             found=1
@@ -2826,7 +2832,6 @@ port_group_list_vss()
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2 "\t" $3}' "${STATE_FILE}" | sort -t $'\t' -k2,2n)
     fi
     ((found == 1)) || echo "  目前沒有 VSS Port Group。"
-    ((stale == 0)) || echo -e "  ${YELLOW}注意：State 中有已不在 /etc/network/interfaces 的舊項目；目前顯示以設定檔為準。${NC}"
 }
 port_group_list_vds()
 {
