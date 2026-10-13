@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.69
+# Version: 2.0.70
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.69"
+SCRIPT_VERSION="2.0.70"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2216,15 +2216,15 @@ vss_show()
     echo " VSS / vSwitch 目前設定"
     echo "============================================================"
     echo ""
-    echo "Virtual Switch / VSS"
+    echo -e "${CYAN}Virtual Switch / VSS${NC}"
 
     local bridge uplink
     while read -r bridge; do
         [[ -n "${bridge}" ]] || continue
         echo ""
-        echo "  Virtual Switch：$(get_vswitch_name "${bridge}")"
+        echo -e "  Virtual Switch：${GREEN}$(get_vswitch_name "${bridge}")${NC}"
         echo "  PVE Bridge     ：${bridge}"
-        echo "  Physical Uplink："
+        echo -e "  ${CYAN}Physical Uplink：${NC}"
 
         local -a ports=()
         if [[ -d "/sys/class/net/${bridge}/brif" ]]; then
@@ -2238,7 +2238,7 @@ vss_show()
             echo -e "    狀態：${YELLOW}尚未設定 Physical Uplink${NC}"
         else
             for uplink in "${ports[@]}"; do
-                echo "    ${bridge} → ${uplink}"
+                echo -e "    ${GREEN}${bridge} → ${uplink}${NC}"
                 if [[ -f "/proc/net/bonding/${uplink}" ]]; then
                     echo "    模式：Bond / NIC Teaming"
                     grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "/proc/net/bonding/${uplink}" | while IFS= read -r detail; do
@@ -2256,10 +2256,10 @@ vss_show()
 
     echo ""
     get_management_info
-    echo "Management / Host Network"
+    echo -e "${CYAN}Management / Host Network${NC}"
     echo "  Device ：${DEV_WITH_GW:-未偵測}"
-    echo "  IP     ：${CURRENT_IP:-未偵測}"
-    echo "  Gateway：${CURRENT_GW:-未偵測}"
+    echo -e "  IP     ：${GREEN}${CURRENT_IP:-未偵測}${NC}"
+    echo -e "  Gateway：${GREEN}${CURRENT_GW:-未偵測}${NC}
     pause_screen
 }
 vss_vmkernel_menu()
@@ -2710,7 +2710,7 @@ vds_setup()
 port_group_list_vss()
 {
     echo "============================================================"
-    echo " Port Group"
+    echo -e "${CYAN} Port Group${NC}"
     echo "============================================================"
 
     local found=0 name vlan bridge vlan_dev
@@ -2721,7 +2721,7 @@ port_group_list_vss()
             bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
             vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
             [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
-            printf "  - %-12s | VLAN %-4s | %-12s | %s (%s)\n" "${name}" "${vlan}" "${vlan_dev}" "$(get_vswitch_name "${bridge}")" "${bridge:-未知}"
+            echo -e "  - ${GREEN}${name}${NC} | VLAN ${vlan} | ${vlan_dev} | $(get_vswitch_name "${bridge}") (${bridge:-未知})"
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2 "\t" $3}' "${STATE_FILE}" | sort -t $'\t' -k2,2n)
     fi
     ((found == 1)) || echo "  目前沒有 VSS Port Group。"
