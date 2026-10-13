@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.58
+# Version: 2.0.59
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.58"
+SCRIPT_VERSION="2.0.59"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1581,7 +1581,6 @@ apply_interfaces_file()
             printf '%s\n' "${preflight_output}"
             log_info "預檢只有 bridge-fd 0 範圍警告（ifreload exit ${preflight_status}）；沒有其他解析錯誤，繼續套用。"
         else
-            printf '%s\n' "${preflight_output}" >&2
             log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
             if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
                 log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
