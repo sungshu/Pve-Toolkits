@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.81
+# Version: 2.0.82
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.81"
+SCRIPT_VERSION="2.0.82"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2943,9 +2943,45 @@ vss_port_group_create()
 
         if ((state_exists == 1 && config_exists == 0)); then
             if ((runtime_exists == 1)); then
-                log_error "State 記錄此工具管理的 Port Group，但 Runtime Bridge 仍存在：${vnet}"
-                log_error "為避免中斷仍在使用的 VM 網路，不會自動刪除 Runtime Bridge。請先確認使用狀態並清理後重試。"
-                continue
+                local member_path member unsafe_member=""
+                for member_path in /sys/class/net/"${vnet}"/brif/*; do
+                    [[ -e "${member_path}" ]] || continue
+                    member="${member_path##*/}"
+                    # 只允許殘留的原 VLAN Interface 留在舊 Bridge 上；
+                    # TAP、VETH 或其他 Bridge Port 代表仍可能有 VM / 容器在使用。
+                    if [[ "${member}" != "${stale_vlan_dev}" ]]; then
+                        unsafe_member="${member}"
+                        break
+                    fi
+                done
+
+                if [[ -n "${unsafe_member}" ]]; then
+                    log_error "State 記錄此工具管理的 Port Group，但 Runtime Bridge 仍有其他連接埠：${vnet} / ${unsafe_member}"
+                    log_error "為避免中斷 VM / 容器網路，停止清理；請先移除或遷移該連接埠。"
+                    continue
+                fi
+                if [[ -n "${stale_vlan_dev}" && -e "/sys/class/net/${stale_vlan_dev}" ]]; then
+                    local vlan_master=""
+                    vlan_master="$(readlink -f "/sys/class/net/${stale_vlan_dev}/master" 2>/dev/null || true)"
+                    if [[ -n "${vlan_master}" && "${vlan_master##*/}" != "${vnet}" ]]; then
+                        log_error "舊 VLAN Interface 已連到其他 Bridge，拒絕清理：${stale_vlan_dev} → ${vlan_master##*/}"
+                        continue
+                    fi
+                fi
+
+                echo "偵測到 GUI 刪除後殘留的 Runtime Bridge：${vnet}"
+                echo "目前沒有 VM / 容器連接埠；清理後可重新建立同名 Port Group。"
+                if ! confirm "確認清理孤立 Runtime Bridge 與舊 State？"; then
+                    log_info "保留 Runtime Bridge 與 State，取消本次建立。"
+                    continue
+                fi
+                if ! ip link set dev "${vnet}" down ||
+                   ! ip link delete dev "${vnet}" type bridge ||
+                   ip link show "${vnet}" >/dev/null 2>&1; then
+                    log_error "孤立 Runtime Bridge 清理失敗：${vnet}"
+                    continue
+                fi
+                runtime_exists=0
             fi
 
             if [[ -n "${stale_vlan_dev}" ]] &&
