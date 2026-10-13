@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.83
+# Version: 2.0.84
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.83"
+SCRIPT_VERSION="2.0.84"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1624,6 +1624,40 @@ normalize_bridge_fd_zero()
     log_info "已將 bridge-fd 0 正規化為合法值 2，避免 ifreload 以警告回傳失敗。"
 }
 
+config_declares_auto_iface()
+{
+    local iface="$1"
+    local config="$2"
+    [[ -f "${config}" ]] || return 1
+    awk -v target="${iface}" '
+        $1 == "auto" {
+            for (i = 2; i <= NF; i++) if ($i == target) auto=1
+        }
+        $1 == "iface" && $2 == target { stanza=1 }
+        END { exit (auto && stanza) ? 0 : 1 }
+    ' "${config}"
+}
+
+is_expected_new_iface_preflight_warning()
+{
+    local iface="$1"
+    local candidate="$2"
+    local previous="$3"
+
+    [[ "${iface}" =~ ^[A-Za-z0-9_.:-]+$ ]] || return 1
+    [[ ! -e "/sys/class/net/${iface}" ]] || return 1
+    config_declares_auto_iface "${iface}" "${candidate}" || return 1
+
+    # 只有候選設定新增、且 Runtime 尚未建立的 auto interface 才能視為正常預檢提示。
+    if [[ -f "${previous}" ]] && awk -v target="${iface}" '
+        $1 == "iface" && $2 == target { found=1 }
+        END { exit found ? 0 : 1 }
+    ' "${previous}"; then
+        return 1
+    fi
+    return 0
+}
+
 apply_interfaces_file()
 {
     local change_id="$1"
@@ -1661,30 +1695,55 @@ apply_interfaces_file()
         fi
         return 1
     fi
-    # ifquery --list 只能確認介面清單可讀；用 ifreload parser 檢查 bond/bridge
-    # 等完整設定關係。ifupdown2 對 bridge-fd 0 會回報範圍警告；
-    # 僅當預檢輸出全部都是這一種警告時允許繼續，其他錯誤仍拒絕套用。
+    # -s 僅執行 parser；新增的 auto interface 尚未出現在 Runtime 時，ifupdown2
+    # 會回報 interface not recognized。只放行本次新增且有完整 auto/iface 定義的介面。
     local preflight_output=""
     local preflight_status=0
-    if preflight_output="$(ifreload -a -s 2>&1)"; then
-        if [[ -n "${preflight_output}" ]]; then printf '%s\n' "${preflight_output}"; fi
-    else
-        preflight_status=$?
-        if [[ -n "${preflight_output}" ]] &&
-           awk '
-               /^warning: [^:]+: bridge-fd: value of out range "0": valid attribute range: 2-255$/ { seen=1; next }
-               NF { unexpected=1 }
-               END { exit (seen && !unexpected) ? 0 : 1 }
-           ' <<<"${preflight_output}"; then
-            log_info "已忽略 bridge-fd 0 相容性警告（bridge-stp off 時有效），繼續套用。"
-        else
-            printf '%s\n' "${preflight_output}" >&2
-            log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
-            if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
-                log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
-            fi
-            return 1
+    local previous_interfaces="${BACKUP_DIR}/${change_id}/interfaces"
+    local filtered_preflight=""
+    local ignored_bridge_fd=0
+    local line
+    local -a ignored_new_ifaces=()
+    preflight_output="$(ifreload -a -s 2>&1)" && preflight_status=0 || preflight_status=$?
+
+    while IFS= read -r line; do
+        [[ -n "${line}" ]] || continue
+        if [[ "${line}" =~ ^warning:[[:space:]]([A-Za-z0-9_.:-]+):[[:space:]]interface[[:space:]]not[[:space:]]recognized[[:space:]]-[[:space:]]please[[:space:]]check[[:space:]]interface[[:space:]]configuration$ ]] &&
+           is_expected_new_iface_preflight_warning "${BASH_REMATCH[1]}" "${source}" "${previous_interfaces}"; then
+            ignored_new_ifaces+=("${BASH_REMATCH[1]}")
+            continue
         fi
+        case "${line}" in
+            warning:*'bridge-fd: value of out range "0": valid attribute range: 2-255')
+                ignored_bridge_fd=1
+                continue
+                ;;
+        esac
+        filtered_preflight+="${line}"$'\n'
+    done <<<"${preflight_output}"
+
+    if (("${ignored_bridge_fd}" == 1)); then
+        log_info "已忽略 bridge-fd 0 相容性警告（bridge-stp off 時有效），繼續套用。"
+    fi
+    if (("${#ignored_new_ifaces[@]}" > 0)); then
+        local joined_new_ifaces
+        joined_new_ifaces="$(printf '%s\n' "${ignored_new_ifaces[@]}" | sort -u | paste -sd ', ' -)"
+        log_info "新增介面尚未存在於 Runtime，且設定檔定義完整；視為預檢提示並繼續套用：${joined_new_ifaces}"
+    fi
+
+    if ((preflight_status != 0)) && [[ -z "${filtered_preflight}" ]] &&
+       (("${ignored_bridge_fd}" == 0 && "${#ignored_new_ifaces[@]}" == 0)); then
+        filtered_preflight="ifreload -a -s returned ${preflight_status} without a recognized compatibility warning"$'\n'
+    fi
+    if [[ -n "${filtered_preflight}" ]]; then
+        printf '%s' "${filtered_preflight}" >&2
+    fi
+    if ((preflight_status != 0)) && [[ -n "${filtered_preflight}" ]]; then
+        log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
+        if ! install -m 0644 "${previous_interfaces}" /etc/network/interfaces; then
+            log_error "原始 interfaces 還原失敗：${previous_interfaces}"
+        fi
+        return 1
     fi
     # ifupdown2 的舊 Runtime State 可能引用已不存在的 Bridge（例如 vLan050/brif）。
     # 已在本節點觀察到 ifreload -a 因舊狀態失敗，而 -a -u Dry-run 可通過；
