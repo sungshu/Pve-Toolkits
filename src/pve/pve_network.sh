@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.49
+# Version: 2.0.50
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.49"
+SCRIPT_VERSION="2.0.50"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1157,17 +1157,25 @@ validate_change_backup()
         log_error "Backup State 存在但內容為空。"
         return 1
     fi
-    if [[ -e "${backup_dir}/sdn-config-present" ]]; then
+    if [[ -e "${backup_dir}/sdn-config-present" && -e "${backup_dir}/sdn-config-absent" ]]; then
+        log_error "Backup 同時標示 SDN 設定存在與不存在，資料互相矛盾。"
+        return 1
+    elif [[ -e "${backup_dir}/sdn-config-present" ]]; then
         [[ -s "${backup_dir}/sdn.cfg" ]] || {
             log_error "Backup 標示有 SDN 設定，但 sdn.cfg 不存在或為空。"
             return 1
         }
-    elif [[ ! -e "${backup_dir}/sdn-config-absent" ]]; then
-        log_error "Backup 缺少 SDN 設定存在性標記。"
+    elif [[ -e "${backup_dir}/sdn-config-absent" ]]; then
+        [[ ! -e "${backup_dir}/sdn.cfg" ]] || {
+            log_error "Backup 標示沒有 SDN 設定，但 sdn.cfg 卻存在。"
+            return 1
+        }
+    elif [[ -f "${backup_dir}/SHA256SUMS" ]]; then
+        log_error "新版 Backup 缺少 SDN 設定存在性標記。"
         return 1
     fi
-    # 2.0.45 之前建立的歷史 Backup 沒有 SHA256SUMS，仍以必要檔案結構驗證；
-    # 新版 Backup 必須通過 SHA256 驗證，不能把舊格式誤判成新版完整性驗證已通過。
+    # 舊版 Backup 若沒有 SDN 標記，代表當時未保存 SDN 快照；只驗證可用的網路設定資料。
+    # 有 SHA256SUMS 的新版 Backup 必須保留 SDN 存在性標記。
     if [[ -f "${backup_dir}/SHA256SUMS" ]]; then
         ( cd "${backup_dir}" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || {
             log_error "Backup SHA256 完整性驗證失敗：${backup_dir}"
@@ -3532,7 +3540,17 @@ rollback_baseline()
     echo "============================================================"
     echo ""
     echo "這是高風險操作。"
-    echo "Baseline 會直接覆蓋目前 /etc/network/interfaces。"
+    echo "本操作使用最初建立的 Baseline，不是 Backup History 中最近一筆備份。"
+    echo ""
+    echo "還原來源與目的："
+    echo "  Network 設定：${BASELINE_DIR}/interfaces.orig"
+    echo "              → /etc/network/interfaces"
+    echo "  工具 State ：${BASELINE_DIR}/objects.conf.orig"
+    echo "              → ${STATE_FILE}"
+    if [[ -s "${BASELINE_DIR}/created-at" ]]; then
+        echo "  建立時間    ：$(cat "${BASELINE_DIR}/created-at")"
+    fi
+    echo "  SDN         ：Baseline 未保存 SDN 設定；本操作不變更目前 SDN。"
     echo ""
 
     if ! baseline_exists; then
@@ -3541,7 +3559,7 @@ rollback_baseline()
         return 0
     fi
 
-    if ! confirm "確認使用最初 Baseline 還原網路設定？"; then
+    if ! confirm "確認使用上述 Baseline 檔案覆蓋目前網路設定並還原工具 State？"; then
         pause_screen
         return 0
     fi
@@ -3777,11 +3795,24 @@ backup_history()
         else
             echo " 備份類型：變更前自動 Backup"
         fi
-        echo " Source   ：${backup}/interfaces"
-        if [[ -s "${backup}/state" ]]; then
-            echo " State    ：可用"
+        echo " 還原來源：${backup}/interfaces"
+        echo " 還原目的：/etc/network/interfaces"
+        if [[ -f "${backup}/state" ]]; then
+            echo " State    ：${backup}/state → ${STATE_FILE}"
         else
-            echo " State    ：無（還原時保留現有 State）"
+            echo " State    ：此 Backup 沒有 State；還原後保留目前 ${STATE_FILE}"
+        fi
+        if [[ -e "${backup}/sdn-config-present" && -s "${backup}/sdn.cfg" ]]; then
+            echo " SDN 快照 ：有，${backup}/sdn.cfg（$(stat -c '%s' "${backup}/sdn.cfg") bytes）"
+            echo " SDN 目的 ：本次 Recovery 不套用 SDN 快照；目前 /etc/pve/sdn.cfg 保持不變"
+        elif [[ -e "${backup}/sdn-config-absent" ]]; then
+            echo " SDN 快照 ：建立此 Backup 時沒有 /etc/pve/sdn.cfg"
+            echo " SDN 目的 ：目前 SDN 保持不變"
+        elif [[ ! -f "${backup}/SHA256SUMS" ]]; then
+            echo " SDN 快照 ：舊版 Backup 未記錄，無法判定"
+            echo " SDN 目的 ：目前 SDN 保持不變"
+        else
+            echo " SDN 快照 ：標記缺失或不完整，Backup 驗證將拒絕還原"
         fi
         if ! validate_change_backup "${backup}"; then
             log_error "此 Backup 完整性驗證失敗，拒絕還原。"
