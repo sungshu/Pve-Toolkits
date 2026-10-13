@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.73
+# Version: 2.0.74
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.73"
+SCRIPT_VERSION="2.0.74"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1048,7 +1048,7 @@ write_vss_interfaces()
 
                     if(line ~ ("^[[:space:]]*auto[[:space:]]+" bond "([[:space:]]|$)")) {
                         have_auto=1
-                        line=""
+                        line="auto " bond
                     }
                     if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) {
                         line="    bond-slaves " nic1 " " nic2
