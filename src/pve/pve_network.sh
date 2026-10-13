@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.62
+# Version: 2.0.63
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.62"
+SCRIPT_VERSION="2.0.63"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -4122,7 +4122,7 @@ main_menu()
         echo ""
         echo "  1) VSS — Standard Virtual Switch"
         echo "  2) VDS — Distributed Virtual Switch"
-        echo "  3) 備份與還原管理（含歷史備份還原）"
+        echo "  3) 備份與還原"
         echo "  0) 離開"
         echo ""
         echo "------------------------------------------------------------"
