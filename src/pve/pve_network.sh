@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.72
+# Version: 2.0.73
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.72"
+SCRIPT_VERSION="2.0.73"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1007,16 +1007,27 @@ write_vss_interfaces()
                 next
 
             if (is_bond_auto_only) {
-                # 舊版可能把 Bond options 寫在 auto-only paragraph；清除錯位欄位，
-                # 讓下一個 iface stanza 成為 Bond 設定的唯一來源。
-                n=split($0,a,"\n")
+                # auto bond stanza 會在 iface stanza 中重建，確保 PVE 將 Bond 識別為 bridge port。
+                n=split($0,a,"\\n")
                 out=""
                 for(i=1;i<=n;i++) {
+                    if(a[i] ~ /^[[:space:]]*auto[[:space:]]+/) {
+                        sub(/^[[:space:]]*auto[[:space:]]+/, "", a[i])
+                        m=split(a[i],auto_ifaces,/[[:space:]]+/)
+                        auto_line="auto"
+                        for(j=1;j<=m;j++)
+                            if(auto_ifaces[j]!="" && auto_ifaces[j]!=bond)
+                                auto_line=auto_line " " auto_ifaces[j]
+                        if(auto_line=="auto")
+                            continue
+                        a[i]=auto_line
+                    }
                     if(a[i] ~ /^[[:space:]]*(bond-slaves|bond-miimon|bond-mode|bond-primary|bond-xmit-hash-policy|bond-lacp-rate)[[:space:]]+/)
                         continue
-                    out=out (out=="" ? "" : "\n") a[i]
+                    out=out (out=="" ? "" : "\\n") a[i]
                 }
-                print out
+                if(out!="")
+                    print out
                 next
             }
 
@@ -1024,6 +1035,7 @@ write_vss_interfaces()
                 bond_found=1
                 n=split($0,a,"\n")
                 out=""
+                have_auto=0
                 have_slaves=0
                 have_miimon=0
                 have_mode=0
@@ -1034,6 +1046,10 @@ write_vss_interfaces()
                 for(i=1;i<=n;i++) {
                     line=a[i]
 
+                    if(line ~ ("^[[:space:]]*auto[[:space:]]+" bond "([[:space:]]|$)")) {
+                        have_auto=1
+                        line=""
+                    }
                     if(line ~ /^[[:space:]]*bond-slaves[[:space:]]+/) {
                         line="    bond-slaves " nic1 " " nic2
                         have_slaves=1
@@ -1074,6 +1090,7 @@ write_vss_interfaces()
                     if(line!="") out=out (out=="" ? "" : "\n") line
                 }
 
+                if(!have_auto) out="auto " bond "\\n" out
                 if(!have_slaves) out=out "\n    bond-slaves " nic1 " " nic2
                 if(!have_miimon) out=out "\n    bond-miimon 100"
                 if(!have_mode) out=out "\n    bond-mode " bond_mode
