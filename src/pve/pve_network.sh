@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.67
+# Version: 2.0.68
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.67"
+SCRIPT_VERSION="2.0.68"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2254,6 +2254,7 @@ vss_show()
 
     port_group_list_vss
     echo ""
+    get_management_info
     echo "Management / Host Network"
     echo "  Device ：${DEV_WITH_GW:-未偵測}"
     echo "  IP     ：${CURRENT_IP:-未偵測}"
@@ -2713,8 +2714,8 @@ port_group_list_vss()
     echo ""
 
     local found=0 name vlan bridge vlan_dev
-    printf "  %-16s %-8s %-18s %-15s %-10s\n" "Port Group" "VLAN ID" "VLAN Interface" "Virtual Switch" "PVE Bridge"
-    printf "  %-16s %-8s %-18s %-15s %-10s\n" "---------------" "-------" "----------------" "--------------" "----------"
+    printf "  %-16s %-8s %-18s %-15s %s\n" "Port Group" "VLAN ID" "VLAN Interface" "Virtual Switch" "PVE Bridge"
+    printf "  %-16s %-8s %-18s %-15s %s\n" "---------------" "-------" "----------------" "--------------" "----------"
     if [[ -f "${STATE_FILE}" ]]; then
         while IFS=$'\t' read -r name vlan; do
             [[ -n "${name}" ]] || continue
@@ -2722,7 +2723,7 @@ port_group_list_vss()
             bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
             vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
             [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
-            printf "  %-16s %-8s %-18s %-15s %-10s\n" "${name}" "${vlan}" "${vlan_dev}" "$(get_vswitch_name "${bridge}")" "${bridge:-未知}"
+            printf "  %-16s %-8s %-18s %-15s %s\n" "${name}" "${vlan}" "${vlan_dev}" "$(get_vswitch_name "${bridge}")" "${bridge:-未知}"
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2 "\t" $3}' "${STATE_FILE}" | sort -t $'\t' -k2,2n)
     fi
 
