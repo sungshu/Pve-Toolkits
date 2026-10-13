@@ -3694,8 +3694,7 @@ backup_history()
                 # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
                       ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
-                      ! -d "${backup}" || -L "${backup}" ||
-                       ]]; then
+                      ! -d "${backup}" || -L "${backup}" ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
                     pause_screen
                     continue
