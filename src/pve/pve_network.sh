@@ -3651,7 +3651,7 @@ backup_history()
                     candidate_id="${candidate##*/}"
                     if [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" &&
                           ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) &&
-                          -d "${candidate}" && ! -L "${candidate}"]]; then
+                          -d "${candidate}" && ! -L "${candidate}" ]]; then
                         if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
                             log_ok "已刪除自動 Backup：${candidate_id}"
                         else
