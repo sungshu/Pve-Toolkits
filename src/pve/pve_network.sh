@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.47
+# Version: 2.0.48
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.47"
+SCRIPT_VERSION="2.0.48"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3623,21 +3623,35 @@ backup_history()
         fi
         if [[ "${choice}" =~ ^[aA]$ ]]; then
             local -a auto_backups=()
-            local invalid_backup="" candidate candidate_id
+            local invalid_backup="" invalid_reason="" candidate candidate_id
             for candidate in "${backups[@]}"; do
                 candidate_id="${candidate##*/}"
                 # 全部刪除僅涵蓋 CHG-* 自動備份；MANUAL-* 永遠不會進入批次刪除清單。
                 [[ "${candidate_id}" == CHG-* ]] || continue
                 auto_backups+=( "${candidate}" )
-                if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ||
-                      ! ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
-                      ! -d "${candidate}" || -L "${candidate}" ]]; then
+
+                # 分項回報拒絕原因；保留「先驗證全部、再開始刪除」的原子性安全流程。
+                if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ]]; then
                     invalid_backup="${candidate}"
+                    invalid_reason="不是 BACKUP_DIR 下的直接子目錄路徑"
+                elif [[ ! ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ]]; then
+                    invalid_backup="${candidate}"
+                    invalid_reason="Backup ID 格式不符合新格式或舊版 CHG 格式"
+                elif [[ ! -d "${candidate}" ]]; then
+                    invalid_backup="${candidate}"
+                    invalid_reason="Backup 目錄不存在或不是目錄"
+                elif [[ -L "${candidate}" ]]; then
+                    invalid_backup="${candidate}"
+                    invalid_reason="Backup 路徑是符號連結，基於安全性拒絕批次刪除"
+                fi
+
+                if [[ -n "${invalid_backup}" ]]; then
                     break
                 fi
             done
             if [[ -n "${invalid_backup}" ]]; then
                 log_error "發現不符合安全條件的自動 Backup：${invalid_backup}"
+                log_error "拒絕原因：${invalid_reason}"
                 log_error "為避免部分刪除，已取消全部刪除；未刪除任何 Backup。"
                 pause_screen
                 continue
@@ -3698,10 +3712,19 @@ backup_history()
             0) continue ;;
             d|D)
                 # 僅允許刪除 BACKUP_DIR 下符合工具 Backup ID 格式的單一直接子目錄。
-                if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
-                      ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
-                      ! -d "${backup}" || -L "${backup}" ]]; then
-                    log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
+                local single_delete_reason=""
+                if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ]]; then
+                    single_delete_reason="不是 BACKUP_DIR 下的直接子目錄路徑"
+                elif [[ ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ]]; then
+                    single_delete_reason="Backup ID 格式不符合允許格式"
+                elif [[ ! -d "${backup}" ]]; then
+                    single_delete_reason="Backup 目錄不存在或不是目錄"
+                elif [[ -L "${backup}" ]]; then
+                    single_delete_reason="Backup 路徑是符號連結，基於安全性拒絕刪除"
+                fi
+                if [[ -n "${single_delete_reason}" ]]; then
+                    log_error "Backup 刪除安全檢查未通過：${change_id}"
+                    log_error "拒絕原因：${single_delete_reason}"
                     pause_screen
                     continue
                 fi
