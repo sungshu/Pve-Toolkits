@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.76
+# Version: 2.0.77
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.76"
+SCRIPT_VERSION="2.0.77"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2265,6 +2265,31 @@ vss_show()
         echo "  PVE Bridge     ：${bridge}"
         echo -e "  ${CYAN}Physical Uplink：${NC}"
 
+        local configured_ports runtime_ports
+        configured_ports="$(awk -v bridge="${bridge}" '
+            BEGIN { RS="" }
+            {
+                n=split($0, lines, "\n")
+                for(i=1;i<=n;i++) {
+                    if(lines[i] ~ /^[[:space:]]*iface[[:space:]]+/) {
+                        split(lines[i], fields, /[[:space:]]+/)
+                        if(fields[2] != bridge) continue
+                        for(j=1;j<=n;j++) {
+                            if(lines[j] ~ /^[[:space:]]*bridge-ports[[:space:]]+/) {
+                                sub(/^[[:space:]]*bridge-ports[[:space:]]+/, "", lines[j])
+                                gsub(/[[:space:]]+/, " ", lines[j])
+                                sub(/^ /, "", lines[j])
+                                sub(/ $/, "", lines[j])
+                                print lines[j]
+                                exit
+                            }
+                        }
+                    }
+                }
+            }
+        ' /etc/network/interfaces 2>/dev/null)"
+        echo "    設定檔 Uplink：${configured_ports:-未設定}"
+
         local -a ports=()
         if [[ -d "/sys/class/net/${bridge}/brif" ]]; then
             while read -r uplink; do
@@ -2272,19 +2297,26 @@ vss_show()
                 ports+=("${uplink}")
             done < <(find "/sys/class/net/${bridge}/brif" -maxdepth 1 -mindepth 1 -type l -printf "%f\n" 2>/dev/null | sort -V)
         fi
+        runtime_ports="${ports[*]}"
+        echo "    Runtime Uplink ：${runtime_ports:-未連接}"
+
+        if [[ "${configured_ports:-}" != "${runtime_ports}" ]]; then
+            echo -e "    ${YELLOW}警告：設定檔與 Runtime 不一致；Runtime 可能是套用失敗後殘留的網路物件。${NC}"
+        fi
 
         if (("${#ports[@]}" == 0)); then
-            echo -e "    狀態：${YELLOW}尚未設定 Physical Uplink${NC}"
+            if [[ -n "${configured_ports}" && "${configured_ports}" != "none" ]]; then
+                echo -e "    ${YELLOW}設定檔有 Uplink，但 Runtime 尚未連接。${NC}"
+            fi
         else
             for uplink in "${ports[@]}"; do
-                echo -e "    ${GREEN}${bridge} → ${uplink}${NC}"
                 if [[ -f "/proc/net/bonding/${uplink}" ]]; then
-                    echo "    模式：Bond / NIC Teaming"
+                    echo "    ${uplink}：Bond / NIC Teaming"
                     grep -E 'Bonding Mode|MII Status|Currently Active Slave|Slave Interface' "/proc/net/bonding/${uplink}" | while IFS= read -r detail; do
                         echo "      ${detail}"
                     done || true
                 else
-                    echo "    模式：單 NIC，未使用 Bond"
+                    echo "    ${uplink}：單 NIC，未使用 Bond"
                 fi
             done
         fi
