@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.77
+# Version: 2.0.78
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.77"
+SCRIPT_VERSION="2.0.78"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1541,9 +1541,16 @@ restore_change_backup()
     return 0
 }
 
-network_pending_configuration_exists()
+network_pending_file_exists()
 {
     [[ -f /etc/network/interfaces.new && -s /etc/network/interfaces.new ]]
+}
+
+network_pending_configuration_exists()
+{
+    # interfaces.new 若與目前設定完全相同，只是殘留的同內容暫存檔，
+    # 不代表有尚未套用的網路差異；cmp 已由 check_environment 確認存在。
+    network_pending_file_exists && ! cmp -s /etc/network/interfaces /etc/network/interfaces.new
 }
 
 network_pending_guard()
@@ -4174,6 +4181,8 @@ main_menu()
         echo "  PVE 版本 ：$(get_pve_version)"
     if network_pending_configuration_exists; then
         echo -e "  GUI Pending：${YELLOW}存在 / 網路變更暫停${NC}"
+    elif network_pending_file_exists; then
+        echo "  GUI Pending：暫存檔存在，但與目前設定相同（無差異）"
     else
         echo "  GUI Pending：無"
     fi
