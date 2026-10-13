@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.53
+# Version: 2.0.54
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.53"
+SCRIPT_VERSION="2.0.54"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1494,13 +1494,30 @@ apply_interfaces_file()
         return 1
     fi
     # ifquery --list 只能確認介面清單可讀；用 ifreload parser 檢查 bond/bridge
-    # 等完整設定關係。檢查失敗時還原檔案，不執行 Runtime 網路變更。
-    if ! ifreload -a -s; then
-        log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
-        if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
-            log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
+    # 等完整設定關係。ifupdown2 對 bridge-fd 0 會回報範圍警告；
+    # 僅當預檢輸出全部都是這一種警告時允許繼續，其他錯誤仍拒絕套用。
+    local preflight_output=""
+    local preflight_status=0
+    if preflight_output="$(ifreload -a -s 2>&1)"; then
+        [[ -n "${preflight_output}" ]] && printf '%s\\n' "${preflight_output}"
+    else
+        preflight_status=$?
+        if [[ -n "${preflight_output}" ]] &&
+           awk '
+               /^warning: [^:]+: bridge-fd: value out of range "0": valid attribute range: 2-255$/ { seen=1; next }
+               NF { unexpected=1 }
+               END { exit (seen && !unexpected) ? 0 : 1 }
+           ' <<<"${preflight_output}"; then
+            printf '%s\\n' "${preflight_output}"
+            log_info "預檢只有 bridge-fd 0 範圍警告（ifreload exit ${preflight_status}）；沒有其他解析錯誤，繼續套用。"
+        else
+            printf '%s\\n' "${preflight_output}" >&2
+            log_error "網路設定預檢失敗；尚未套用 Runtime，還原原始 interfaces：${change_id}"
+            if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
+                log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
+            fi
+            return 1
         fi
-        return 1
     fi
     # ifupdown2 的舊 Runtime State 可能引用已不存在的 Bridge（例如 vLan050/brif）。
     # 已在本節點觀察到 ifreload -a 因舊狀態失敗，而 -a -u Dry-run 可通過；
