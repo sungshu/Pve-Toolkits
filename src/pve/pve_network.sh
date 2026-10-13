@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.79
+# Version: 2.0.80
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.79"
+SCRIPT_VERSION="2.0.80"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1416,7 +1416,8 @@ restore_change_backup()
         had_state=1
     fi
 
-    if ! install -m 0644 "${source}" /etc/network/interfaces; then
+    if ! install -m 0644 "${source}" /etc/network/interfaces ||
+       ! ensure_pve_sdn_source /etc/network/interfaces; then
         cp -a "${rollback_path}" /etc/network/interfaces
         rm -f -- "${rollback_path}" "${rollback_state:-}"
         log_error "無法安裝 Recovery 設定檔；已保留原設定。"
@@ -1578,6 +1579,16 @@ network_pending_guard()
     return 1
 }
 
+ensure_pve_sdn_source()
+{
+    local target="$1"
+    [[ -f "${target}" ]] || return 1
+    if grep -Eq '^[[:space:]]*source[[:space:]]+/etc/network/interfaces\.d/sdn([[:space:]]|$)' "${target}"; then
+        return 0
+    fi
+    printf '\n# Proxmox VE SDN configuration\nsource /etc/network/interfaces.d/sdn\n' >> "${target}"
+}
+
 apply_interfaces_file()
 {
     local change_id="$1"
@@ -1589,6 +1600,11 @@ apply_interfaces_file()
         log_error "找不到要套用的網路設定：${source}"
         return 1
     }
+
+    if ! ensure_pve_sdn_source "${source}"; then
+        log_error "無法保留 Proxmox SDN 設定載入指示。"
+        return 1
+    fi
 
     if command -v ifquery >/dev/null 2>&1; then
         if ! ifquery --list -i "${source}" >/dev/null 2>&1; then
@@ -2791,18 +2807,26 @@ port_group_list_vss()
     echo -e "${CYAN} Port Group${NC}"
     echo "============================================================"
 
-    local found=0 name vlan bridge vlan_dev
+    local found=0 stale=0 name vlan bridge vlan_dev
     if [[ -f "${STATE_FILE}" ]]; then
         while IFS=$'\t' read -r name vlan; do
             [[ -n "${name}" ]] || continue
-            found=1
             bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
             vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
             [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
+
+            # GUI 外部刪除後，工具 State 可能尚未同步；只列出 interfaces
+            # 仍存在的 Port Group，避免把歷史 State 誤報成目前設定。
+            if ! grep -Eq "^(auto|allow-[^[:space:]]+)[[:space:]]+${name}([[:space:]]|$)|^iface[[:space:]]+${name}([[:space:]]|$)" /etc/network/interfaces; then
+                stale=1
+                continue
+            fi
+            found=1
             echo -e "  - ${GREEN}${name}${NC} | VLAN ${vlan} | ${vlan_dev} | $(get_vswitch_name "${bridge}") (${bridge:-未知})"
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2 "\t" $3}' "${STATE_FILE}" | sort -t $'\t' -k2,2n)
     fi
     ((found == 1)) || echo "  目前沒有 VSS Port Group。"
+    ((stale == 0)) || echo -e "  ${YELLOW}注意：State 中有已不在 /etc/network/interfaces 的舊項目；目前顯示以設定檔為準。${NC}"
 }
 port_group_list_vds()
 {
