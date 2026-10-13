@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.54
+# Version: 2.0.55
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.54"
+SCRIPT_VERSION="2.0.55"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1504,7 +1504,7 @@ apply_interfaces_file()
         preflight_status=$?
         if [[ -n "${preflight_output}" ]] &&
            awk '
-               /^warning: [^:]+: bridge-fd: value out of range "0": valid attribute range: 2-255$/ { seen=1; next }
+               /^warning: [^:]+: bridge-fd: value of out range "0": valid attribute range: 2-255$/ { seen=1; next }
                NF { unexpected=1 }
                END { exit (seen && !unexpected) ? 0 : 1 }
            ' <<<"${preflight_output}"; then
