@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.45
-# Updated: 2026-10-12
+# Version: 2.0.47
+# Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.46"
-UPDATED="2026-10-12"
+SCRIPT_VERSION="2.0.47"
+UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
 UPDATE_STATUS="尚未檢查"
@@ -291,6 +291,31 @@ get_vswitch_name()
         echo "${bridge}"
     fi
 }
+
+get_vss_switch_bridges()
+{
+    local state_type state_key state_value bridge
+
+    [[ -f "${STATE_FILE}" ]] || return 0
+
+    # 明確註冊的 VSS Bridge 是主要來源。
+    # 若舊版曾建立 Port Group、但沒有登錄其父 Virtual Switch，
+    # 以 VSS_PORT_GROUP_BRIDGE 的父 Bridge 關係補足，絕不把 Port Group 自身當成 Switch。
+    while IFS=$'\t' read -r state_type state_key state_value; do
+        case "${state_type}:${state_key}" in
+            VSS:bridge|VSS_PORT_GROUP_BRIDGE:*)
+                bridge="${state_value}"
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        [[ -n "${bridge}" && "${bridge}" =~ ^[A-Za-z0-9_.:-]+$ ]] || continue
+        [[ -d "/sys/class/net/${bridge}/bridge" ]] || continue
+        printf '%s\n' "${bridge}"
+    done < "${STATE_FILE}" | sort -uV
+}
+
 show_nics()
 {
     local index=1 nic state speed
@@ -1864,17 +1889,12 @@ vss_uplink_add()
     local -a bridges=()
     local bridge choice
 
-    # Physical Uplink 只能選真正的 VSS Virtual Switch。
-    # VSS Port Group 也是 Linux Bridge，但不是 Virtual Switch。
-    if [[ -f "${STATE_FILE}" ]]; then
-        while read -r state_type state_key state_value; do
-            [[ "${state_type}" == "VSS" ]] || continue
-            [[ "${state_key}" == "bridge" ]] || continue
-            [[ -n "${state_value}" ]] || continue
-            [[ -d "/sys/class/net/${state_value}/bridge" ]] || continue
-            bridges+=( "${state_value}" )
-        done < "${STATE_FILE}"
-    fi
+    # Physical Uplink 只能選已註冊的 Virtual Switch，或由既有 Port Group
+    # 明確記錄的父 Virtual Switch；不可把 vlan050 等 Port Group Bridge 當成 Switch。
+    while read -r bridge; do
+        [[ -n "${bridge}" ]] || continue
+        bridges+=( "${bridge}" )
+    done < <(get_vss_switch_bridges)
 
     if (("${#bridges[@]}" == 0)); then
         log_error "找不到已註冊的 VSS Virtual Switch。請先建立 VSS。"
@@ -2071,7 +2091,7 @@ vss_show()
             done
         fi
         echo ""
-    done < <(get_linux_bridges)
+    done < <(get_vss_switch_bridges)
 
     echo -e "${CYAN}Port Group：${NC}"
     port_group_list_vss
@@ -2797,7 +2817,8 @@ EOF
         return 1
     fi
 
-    if ! save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}" ||
+    if ! save_state "VSS" "bridge" "${bridge}" ||
+         ! save_state "VSS_PORT_GROUP" "${vnet}" "${vlan}" ||
          ! save_state "VSS_PORT_GROUP_BRIDGE" "${vnet}" "${bridge}" ||
          ! save_state "VSS_PORT_GROUP_VLAN_DEV" "${vnet}" "${vlan_dev}"; then
         log_error "VSS Port Group 已套用，但 State 寫入失敗：${vnet}"
@@ -3605,7 +3626,7 @@ backup_history()
                 if [[ "${candidate}" != "${BACKUP_DIR}/${candidate_id}" ||
                       ! ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
                       ! -d "${candidate}" || -L "${candidate}" ||
-                      ! -s "${candidate}/interfaces" ]]; then
+                       ]]; then
                     invalid_backup="${candidate}"
                     break
                 fi
@@ -3632,7 +3653,7 @@ backup_history()
                     if [[ "${candidate}" == "${BACKUP_DIR}/${candidate_id}" &&
                           ( "${candidate_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${candidate_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) &&
                           -d "${candidate}" && ! -L "${candidate}" &&
-                          -s "${candidate}/interfaces" ]]; then
+                           ]]; then
                         if rm -rf -- "${candidate}" && [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
                             log_ok "已刪除自動 Backup：${candidate_id}"
                         else
@@ -3676,7 +3697,7 @@ backup_history()
                 if [[ "${backup}" != "${BACKUP_DIR}/${change_id}" ||
                       ! ( "${change_id}" =~ ^CHG-[a-z0-9_-]+-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^CHG-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ || "${change_id}" =~ ^MANUAL-[0-9]{8}-[0-9]{6}-[0-9]+-[0-9]+$ ) ||
                       ! -d "${backup}" || -L "${backup}" ||
-                      ! -s "${backup}/interfaces" ]]; then
+                       ]]; then
                     log_error "Backup 路徑或內容不符合安全刪除條件，拒絕刪除。"
                     pause_screen
                     continue
