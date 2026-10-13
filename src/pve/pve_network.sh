@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.78
+# Version: 2.0.79
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.78"
+SCRIPT_VERSION="2.0.79"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -3793,8 +3793,36 @@ rollback_baseline()
         echo ""
     fi
 
-    local change_id
+    local change_id pending_snapshot="" had_pending=0
     change_id="$(create_change_id "baseline-recovery")"
+
+    # Baseline 是明確的整份網路設定回復；先保存 GUI 候選檔，
+    # Recovery 成功後才清除相同的 interfaces.new，避免舊候選設定繼續讓 GUI 顯示 Pending。
+    if [[ -L /etc/network/interfaces.new ]]; then
+        log_error "/etc/network/interfaces.new 是符號連結，拒絕自動清除；Baseline 未執行。"
+        pause_screen
+        return 0
+    elif [[ -e /etc/network/interfaces.new ]]; then
+        if [[ ! -f /etc/network/interfaces.new ]]; then
+            log_error "/etc/network/interfaces.new 不是一般檔案，拒絕自動清除；Baseline 未執行。"
+            pause_screen
+            return 0
+        fi
+        mkdir -p "${RECOVERY_DIR}/${change_id}" || {
+            log_error "無法建立 Baseline Recovery 記錄目錄；Baseline 未執行。"
+            pause_screen
+            return 0
+        }
+        pending_snapshot="${RECOVERY_DIR}/${change_id}/interfaces.pending-before-baseline"
+        if ! cp -a /etc/network/interfaces.new "${pending_snapshot}"; then
+            log_error "無法保存 GUI Pending 候選設定；Baseline 未執行。"
+            pause_screen
+            return 0
+        fi
+        had_pending=1
+        log_info "GUI Pending 候選已保存：${pending_snapshot}"
+    fi
+
     cp -a /etc/network/interfaces "${BASELINE_DIR}/interfaces.before-baseline-rollback.$(date '+%Y%m%d-%H%M%S-%N')"
 
     # Recovery 必須繞過一般 apply_interfaces_file() 的 Pending Guard，
@@ -3804,6 +3832,18 @@ rollback_baseline()
         log_error "目前網路設定未宣告為 Recovery 成功，請檢查 /etc/network/interfaces 與 Runtime 網路狀態。"
         pause_screen
         return 0
+    fi
+
+    if ((had_pending)); then
+        if [[ -f /etc/network/interfaces.new ]] && cmp -s "${pending_snapshot}" /etc/network/interfaces.new; then
+            if rm -f -- /etc/network/interfaces.new; then
+                log_ok "Baseline 已還原，並清除原 GUI Pending 候選；候選副本保留於 Recovery 記錄。"
+            else
+                log_error "Baseline 已還原，但無法清除 /etc/network/interfaces.new；GUI Pending 仍存在。"
+            fi
+        elif [[ -e /etc/network/interfaces.new || -L /etc/network/interfaces.new ]]; then
+            log_error "Baseline 已還原，但 GUI Pending 候選在 Recovery 期間有變動；為保留新內容，未清除該檔。"
+        fi
     fi
 
     if cluster_quorate; then
