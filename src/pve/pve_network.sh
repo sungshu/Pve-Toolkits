@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.52
+# Version: 2.0.53
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.52"
+SCRIPT_VERSION="2.0.53"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -1153,8 +1153,10 @@ validate_change_backup()
             return 1
         }
     done
-    if [[ -f "${backup_dir}/state" && ! -s "${backup_dir}/state" ]]; then
-        log_error "Backup State 存在但內容為空。"
+    # State 可以是合法的空檔：代表工具尚未記錄任何受管理物件。
+    # 只拒絕非一般檔案，避免把目錄或特殊檔案當成可還原 State。
+    if [[ -e "${backup_dir}/state" && ! -f "${backup_dir}/state" ]]; then
+        log_error "Backup State 不是一般檔案。"
         return 1
     fi
     if [[ -e "${backup_dir}/sdn-config-present" && -e "${backup_dir}/sdn-config-absent" ]]; then
@@ -2231,8 +2233,6 @@ vss_setup()
         echo ""
         echo "  2) 查看目前設定"
         echo "     顯示 Virtual Switch、Port Group、VLAN ID 與 Physical Uplink"
-        echo ""
-        echo "  3) 重新整理"
         echo "  0) 返回"
         echo ""
         local choice
@@ -2240,7 +2240,7 @@ vss_setup()
         case "${choice}" in
             1) vss_add_network_menu ;;
             2) vss_show ;;
-            3) continue ;;
+
             0) return 0 ;;
             *) log_error "選擇無效，請輸入上方數字。"; sleep 1 ;;
         esac
@@ -3919,16 +3919,16 @@ rollback_menu()
         echo " Backup / Recovery"
         echo "============================================================"
         echo ""
-        echo "  1) 立即建立手動 Backup"
-        echo "  2) 從 Backup 還原網路設定（選擇既有備份）"
-        echo "  3) VSS 專用還原"
-        echo "  4) VDS 專用還原"
-        echo "  5) Baseline 最初設定還原"
+        echo "  1) Backup 建立手動備份"
+        echo "  2) Recovery 從既有備份還原網路設定"
+        echo "  3) VSS 還原最近一次 VSS 變更前設定"
+        echo "  4) VDS 刪除本工具建立的 SDN Zone / VNet"
+        echo "  5) Baseline 還原最初設定"
         echo "  0) 返回"
         echo ""
 
         local choice
-        read -r -p "請選擇（1 建立備份，2 從既有備份還原）：" choice
+        read -r -p "請選擇（1 建立手動備份，2 從既有 Backup 還原）：" choice
         case "${choice}" in
             1) backup_now ;;
             2) backup_history ;;
