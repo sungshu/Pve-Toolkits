@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.64
+# Version: 2.0.65
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.64"
+SCRIPT_VERSION="2.0.65"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2991,18 +2991,18 @@ EOF
     fi
 
     echo ""
-    echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN} VSS Port Group 建立結果${NC}"
-    echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
-    echo -e " ${CYAN}Port Group${NC}     ：${GREEN}${vnet}${NC}"
-    echo -e " ${CYAN}VLAN ID${NC}        ：${YELLOW}${vlan}${NC}"
-    echo -e " ${CYAN}VLAN Interface${NC} ：${MAGENTA}${vlan_dev}${NC}"
-    echo -e " ${CYAN}Virtual Switch${NC} ：${GREEN}$(get_vswitch_name "${bridge}")${NC}"
-    echo -e " ${CYAN}PVE Bridge${NC}     ：${MAGENTA}${bridge}${NC}"
-    echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
+    echo "══════════════════════════════════════════════════"
+    echo -e " ${GREEN}VSS Port Group 建立成功${NC}"
+    echo "══════════════════════════════════════════════════"
+    echo " Port Group     ：${vnet}"
+    echo " VLAN ID        ：${vlan}"
+    echo " VLAN Interface ：${vlan_dev}"
+    echo " Virtual Switch ：$(get_vswitch_name "${bridge}")"
+    echo " PVE Bridge     ：${bridge}"
+    echo "══════════════════════════════════════════════════"
     echo ""
-    echo -e " ${CYAN}操作結果${NC}       ：${GREEN}已建立，Runtime 與管理網路驗證通過${NC}"
-    echo -e " ${CYAN}VM 網卡 Bridge${NC} ：${GREEN}${vnet}${NC}"
+    echo -e " 操作結果       ：${GREEN}成功，Runtime 與管理網路驗證通過${NC}"
+    echo " VM 網卡 Bridge ：${vnet}"
     echo ""
     pause_screen
 }
