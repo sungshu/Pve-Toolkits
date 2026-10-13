@@ -979,7 +979,7 @@ write_vss_interfaces()
                         have_stp=1
                     }
                     if(line ~ /^[[:space:]]*bridge-fd[[:space:]]+/) {
-                        line="    bridge-fd 0"
+                        line="    bridge-fd 2"
                         have_fd=1
                     }
                     if(line ~ /^[[:space:]]*bridge-vlan-aware[[:space:]]+/) {
@@ -996,7 +996,7 @@ write_vss_interfaces()
 
                 if(!have_ports) out=out "\n    bridge-ports " bridge_port
                 if(!have_stp) out=out "\n    bridge-stp off"
-                if(!have_fd) out=out "\n    bridge-fd 0"
+                if(!have_fd) out=out "\n    bridge-fd 2"
                 if(!have_vlan_aware) out=out "\n    bridge-vlan-aware yes"
                 if(!have_vlan_vids) out=out "\n    bridge-vids 2-4094"
 
@@ -1114,7 +1114,7 @@ write_vss_interfaces()
                 print "iface " bridge " inet manual"
                 print "    bridge-ports " bridge_port
                 print "    bridge-stp off"
-                print "    bridge-fd 0"
+                print "    bridge-fd 2"
                 print "    bridge-vlan-aware yes"
                 print "    bridge-vids 2-4094"
             }
@@ -1418,7 +1418,8 @@ restore_change_backup()
     fi
 
     if ! install -m 0644 "${source}" /etc/network/interfaces ||
-       ! ensure_pve_sdn_source /etc/network/interfaces; then
+       ! ensure_pve_sdn_source /etc/network/interfaces ||
+       ! normalize_bridge_fd_zero /etc/network/interfaces; then
         cp -a "${rollback_path}" /etc/network/interfaces
         rm -f -- "${rollback_path}" "${rollback_state:-}"
         log_error "無法安裝 Recovery 設定檔；已保留原設定。"
@@ -1590,6 +1591,39 @@ ensure_pve_sdn_source()
     printf '\n# Proxmox VE SDN configuration\nsource /etc/network/interfaces.d/sdn\n' >> "${target}"
 }
 
+normalize_bridge_fd_zero()
+{
+    local target="$1"
+    local normalized
+    [[ -f "${target}" ]] || return 1
+    grep -Eq '^[[:space:]]*bridge-fd[[:space:]]+0[[:space:]]*$' "${target}" || return 0
+
+    normalized="$(mktemp /tmp/pve-network-bridge-fd.XXXXXX)" || return 1
+    if ! awk '
+        {
+            line=$0
+            if (match(line, /^[[:space:]]*bridge-fd[[:space:]]+/)) {
+                prefix=substr(line, 1, RLENGTH)
+                value=substr(line, RLENGTH + 1)
+                if (value ~ /^0([[:space:]]|$)/) {
+                    sub(/^0/, "2", value)
+                    line=prefix value
+                }
+            }
+            print line
+        }
+    ' "${target}" > "${normalized}"; then
+        rm -f -- "${normalized}"
+        return 1
+    fi
+    if ! install -m 0644 "${normalized}" "${target}"; then
+        rm -f -- "${normalized}"
+        return 1
+    fi
+    rm -f -- "${normalized}"
+    log_info "已將 bridge-fd 0 正規化為合法值 2，避免 ifreload 以警告回傳失敗。"
+}
+
 apply_interfaces_file()
 {
     local change_id="$1"
@@ -1619,8 +1653,9 @@ apply_interfaces_file()
         return 1
     fi
     log_step "套用網路設定：${change_id}"
-    if ! install -m 0644 "${source}" /etc/network/interfaces; then
-        log_error "無法寫入待套用的網路設定，嘗試還原原始設定：${change_id}"
+    if ! install -m 0644 "${source}" /etc/network/interfaces ||
+       ! normalize_bridge_fd_zero /etc/network/interfaces; then
+        log_error "無法寫入或整理待套用的網路設定，嘗試還原原始設定：${change_id}"
         if ! install -m 0644 "${BACKUP_DIR}/${change_id}/interfaces" /etc/network/interfaces; then
             log_error "原始 interfaces 還原失敗：${BACKUP_DIR}/${change_id}/interfaces"
         fi
@@ -2042,7 +2077,7 @@ auto ${bridge}
 iface ${bridge} inet manual
     bridge-ports none
     bridge-stp off
-    bridge-fd 0
+    bridge-fd 2
     bridge-vlan-aware yes
     bridge-vids 2-4094
 EOF
@@ -3068,7 +3103,7 @@ auto ${vnet}
 iface ${vnet} inet manual
     bridge-ports ${vlan_dev}
     bridge-stp off
-    bridge-fd 0
+    bridge-fd 2
 EOF
 
     local change_id
