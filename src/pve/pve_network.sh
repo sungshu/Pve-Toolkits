@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.71
+# Version: 2.0.72
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.71"
+SCRIPT_VERSION="2.0.72"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -926,9 +926,26 @@ write_vss_interfaces()
             ORS="\n\n"
             bridge_found=0
             bond_found=0
+            last_iface=""
         }
 
         {
+            record_line_count=split($0, record_lines, "\n")
+            for (record_i=1; record_i<=record_line_count; record_i++) {
+                if (record_lines[record_i] ~ /^[[:space:]]*iface[[:space:]]+/) {
+                    sub(/^[[:space:]]*iface[[:space:]]+/, "", record_lines[record_i])
+                    split(record_lines[record_i], record_iface_fields, /[[:space:]]+/)
+                    last_iface=record_iface_fields[1]
+                    break
+                }
+            }
+
+            # 舊版錯誤輸出可能將 Bond 選項以空行拆成獨立段落。
+            # Bond stanza 已重新產生正確欄位，略過其後殘留的孤立選項。
+            if (bond != "" && last_iface == bond &&
+                $0 ~ /^[[:space:]]*(bond-slaves|bond-miimon|bond-mode|bond-primary|bond-xmit-hash-policy|bond-lacp-rate)[[:space:]]+/)
+                next
+
             is_bridge = ($0 ~ "(^|\n)auto[[:space:]]+" bridge "[[:space:]]*(\n|$)")
             # Bond options belong to iface, not an auto-only paragraph.
             is_bond = (bond != "" && $0 ~ ("(^|\n)iface[[:space:]]+" bond "[[:space:]]"))
@@ -1072,6 +1089,8 @@ write_vss_interfaces()
         }
 
         END {
+            # 輸入段落仍以空行分隔；新增設定則要在同一 stanza 內逐行輸出。
+            ORS="\n"
             if(!bridge_found) {
                 print "auto " bridge
                 print "iface " bridge " inet manual"
@@ -1081,6 +1100,9 @@ write_vss_interfaces()
                 print "    bridge-vlan-aware yes"
                 print "    bridge-vids 2-4094"
             }
+
+            if(!bridge_found && bond!="" && !bond_found)
+                print ""
 
             if(bond!="" && !bond_found) {
                 print "auto " bond
