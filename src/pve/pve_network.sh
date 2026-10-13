@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 # PVE NETWORK PRO - Proxmox VE 網路架構設定工具
-# Version: 2.0.68
+# Version: 2.0.69
 # Updated: 2026-10-13
 
-SCRIPT_VERSION="2.0.68"
+SCRIPT_VERSION="2.0.69"
 UPDATED="2026-10-13"
 REPOSITORY_RAW="https://raw.githubusercontent.com/sungshu/Pve-Toolkits/main/src/pve/pve_network.sh"
 LATEST_VERSION=""
@@ -2216,12 +2216,12 @@ vss_show()
     echo " VSS / vSwitch 目前設定"
     echo "============================================================"
     echo ""
-    echo "Virtual Switch / Physical Uplink"
-    echo ""
+    echo "Virtual Switch / VSS"
 
     local bridge uplink
     while read -r bridge; do
         [[ -n "${bridge}" ]] || continue
+        echo ""
         echo "  Virtual Switch：$(get_vswitch_name "${bridge}")"
         echo "  PVE Bridge     ：${bridge}"
         echo "  Physical Uplink："
@@ -2249,10 +2249,11 @@ vss_show()
                 fi
             done
         fi
-        echo ""
     done < <(get_vss_switch_bridges)
 
+    echo ""
     port_group_list_vss
+
     echo ""
     get_management_info
     echo "Management / Host Network"
@@ -2709,13 +2710,10 @@ vds_setup()
 port_group_list_vss()
 {
     echo "============================================================"
-    echo " Port Group / VLAN 對應"
+    echo " Port Group"
     echo "============================================================"
-    echo ""
 
     local found=0 name vlan bridge vlan_dev
-    printf "  %-16s %-8s %-18s %-15s %s\n" "Port Group" "VLAN ID" "VLAN Interface" "Virtual Switch" "PVE Bridge"
-    printf "  %-16s %-8s %-18s %-15s %s\n" "---------------" "-------" "----------------" "--------------" "----------"
     if [[ -f "${STATE_FILE}" ]]; then
         while IFS=$'\t' read -r name vlan; do
             [[ -n "${name}" ]] || continue
@@ -2723,10 +2721,9 @@ port_group_list_vss()
             bridge="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_BRIDGE" && $2==n {print $3; exit}' "${STATE_FILE}")"
             vlan_dev="$(awk -F '\t' -v n="${name}" '$1=="VSS_PORT_GROUP_VLAN_DEV" && $2==n {print $3; exit}' "${STATE_FILE}")"
             [[ -n "${vlan_dev}" ]] || vlan_dev="${bridge}.${vlan}"
-            printf "  %-16s %-8s %-18s %-15s %s\n" "${name}" "${vlan}" "${vlan_dev}" "$(get_vswitch_name "${bridge}")" "${bridge:-未知}"
+            printf "  - %-12s | VLAN %-4s | %-12s | %s (%s)\n" "${name}" "${vlan}" "${vlan_dev}" "$(get_vswitch_name "${bridge}")" "${bridge:-未知}"
         done < <(awk -F '\t' '$1=="VSS_PORT_GROUP" {print $2 "\t" $3}' "${STATE_FILE}" | sort -t $'\t' -k2,2n)
     fi
-
     ((found == 1)) || echo "  目前沒有 VSS Port Group。"
 }
 port_group_list_vds()
