@@ -5,7 +5,7 @@
 ![PVE Toolkit 自動化管理流程](img/p00/PVE-Toolkit_自動化管理流程.jpg)
 
 > **🇹🇼 TW 繁體中文版**  
-> **目前版本：PVE Toolkit 2.1.9 / disk_monitor.sh 1.3.6-Pro / pve_network.sh 1.0.1**  
+> **目前版本：PVE Toolkit 2.1.9 / disk_monitor.sh 1.3.6-Pro / pve_network.sh GitHub 版 2.0.85（本機測試版 2.1.6，尚未發布）**  
 > **適用環境：Proxmox VE 9.x / Debian 13 Trixie**
 
 PVE Toolkit 是針對 Proxmox VE 主機日常建置與維護所整理的 Shell 工具與實戰文件。
